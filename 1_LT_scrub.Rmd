@@ -1,0 +1,243 @@
+---
+title: "LT_scrub"
+author: "Sigri"
+date: "2024-12-13"
+output: html_document
+---
+
+```{r load libraries}
+library(glmnet)
+library(torch)
+library(SCRuB)
+library(vegan)
+library(phyloseq)
+library(ggplot2)
+library(DECIPHER)
+library(dada2)
+library(readxl)
+library(writexl)
+library(dada2)
+```
+ 
+```{r prepare metadata}
+# Read metadata
+meta <- read_xlsx("EO4_phyloseq_meta.xlsx")
+
+# Read sequencing sample information
+well_plate_number <- read_xlsx("EO4_well_plate_number.xlsx")
+
+# Merge the two tibbles based on the common column seq_sampleID, retaining all rows from the 'seq' tibble (left join).
+merged <- dplyr::left_join(meta, well_plate_number, by="seq_sampleID")
+
+# Save new metadata file (remember to add variables "is_control" and "sample_type" manually to the excel sheet)
+#write_xlsx(merged, "EO4_phyloseq_meta_new.xlsx")
+```
+
+```{r}
+# import ASV table 
+seqtab.nochim <- readRDS("seqtab_dec24.RData")
+# Clean up column names by removing everything after the underscore
+rownames(seqtab.nochim) <- sub("_.*", "", rownames(seqtab.nochim))
+rownames(seqtab.nochim) <- gsub("-", ".", rownames(seqtab.nochim))
+seqtab.nochim <- t(seqtab.nochim)
+seqtab.nochim <- as.matrix(seqtab.nochim)
+
+# Read metadata from an Excel file into a tibble 
+meta <- read_xlsx("EO4_phyloseq_meta_new.xlsx")
+
+# Read taxonomic information from a CSV file into a data frame
+tax <- read.csv("ASVs_taxonomy_dec24.csv", sep = ",",  row.names = 1)
+tax <- as.matrix(tax)
+
+LT_physeq <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=TRUE), 
+               sample_data(meta), 
+               tax_table(tax))
+
+dna <- Biostrings::DNAStringSet(taxa_names(LT_physeq))
+names(dna) <- taxa_names(LT_physeq)
+LT_physeq <- merge_phyloseq(LT_physeq, dna)
+taxa_names(LT_physeq) <- paste0("ASV_", seq(ntaxa(LT_physeq)))
+```
+
+```{r check rarefaction curve}
+# Generate the rarefaction curve
+rarecurve(seqtab.nochim, step=50, cex=0.5, label = FALSE, xlim = c(0, 20000))
+
+# It visualizes the detected sequences in a sample by plotting the number of observed ASVs as a function of sequencing depth. Goal is that the rarefaction curves reaches a plateau, as one can conclude that the sample sufficiently covered the original community it was taken from. 
+```
+
+```{r evaluate-accuracy}
+seq <- t(seqtab.nochim)
+# extract the sequences from one of the mock controls  
+unqs.mock <- seq["EO4.mock.B3",] # EO4.mock.B2, EO4.mock.B3
+unqs.mock <- sort(unqs.mock[unqs.mock>0], decreasing=TRUE) # Drop ASVs absent in the Mock
+cat("DADA2 inferred", length(unqs.mock), "sample sequences present in the Mock community.\n")
+
+path <- "mock_fasta"
+
+# get the mock sequences from the provider (here Zymo)
+mock.ref <- getSequences(file.path(path, "ssrRNAs"))
+match.ref <- sum(sapply(names(unqs.mock), function(x) any(grepl(x, mock.ref))))
+cat("Of those,", sum(match.ref), "were exact matches to the expected reference sequences.\n")
+```
+```{r SCRuB decontamination}
+## SCRuB should be run separately for each contamination source, so in this case, for each plate.
+
+# Initialize an empty list to store the decontaminated samples for each plate
+decontaminated_samples_list <- list()
+
+# Loop through each plate and perform the decontamination
+for (plate_num in 1:4) {
+  # Subset the phyloseq object by plate number
+  LT_physeq_subset <- subset_samples(LT_physeq, plate == plate_num)
+  
+  # Convert the OTU table to a matrix
+  otu_table <- otu_table(LT_physeq_subset)
+  otu_table <- as.data.frame(otu_table)
+  count_matrix <- as.matrix(otu_table)
+  
+  # Transpose the count matrix
+  count_matrix <- t(count_matrix)
+  
+  # Extract metadata and select relevant columns
+  metadata <- sample_data(LT_physeq_subset) %>%
+    data.frame() %>%
+    select("is_control", "sample_type", "sample_well")
+
+  
+  # Filter to non-empty samples
+  inds <- which(rowSums(count_matrix) > 0)
+  scr_out <- SCRuB(count_matrix[inds, ], 
+                   metadata[inds, ])
+  
+  # Extract decontaminated samples for the current plate
+  decontaminated_samples <- as.data.frame(scr_out$decontaminated_samples)
+  
+  # Store the decontaminated samples in the list
+  decontaminated_samples_list[[plate_num]] <- decontaminated_samples
+}
+
+# Combine decontaminated samples from all plates
+count_decontam <- do.call(rbind, decontaminated_samples_list)
+
+# save list over decontaminated samples
+write_xlsx(count_decontam, path= "MS1_LT_decontaminated_samples.xlsx")
+```
+
+```{r evaluate SCRuB output}
+# Generate boxplot for contamination level
+boxplot_contamination <- (1 - scr_out$p) %>%
+  boxplot(ylab = 'Level of contamination')
+
+# Generate boxplot for level of well leakage
+boxplot_well_leakage <- boxplot(1 - scr_out$inner_iterations$`control blank DNA extraction`$alpha[, ncol(scr_out$inner_iterations$`control blank DNA extraction`$alpha)], 
+                                 ylab = 'Level of well leakage in process controls')
+
+# Generate plot for relative abundance
+plot_relative_abundance <- scr_out$inner_iterations$`control blank DNA extraction`$gamma %>%
+  plot(ylab = 'Relative abundance', xlab = 'Different OTUs in contamination source')
+
+```
+
+```{r prepare new phyloseq object after SCRuB}
+# Convert decontaminated samples to ASV table format
+ASV_table <- as.matrix(t(count_decontam))
+
+# Filter samples based on is_control == FALSE and rowSums() > 0
+LT_physeq_new <- prune_samples(sample_sums(LT_physeq) > 0, LT_physeq)
+LT_physeq_new <- subset_samples(LT_physeq_new, is_control == FALSE)
+
+# Extract taxonomy table and sample data
+TAX_table <- tax_table(LT_physeq_new)
+TAX_table <- as.data.frame(TAX_table)
+sample_data <- sample_data(LT_physeq_new)
+
+# Convert ASV and TAX tables to appropriate format
+ASV_table <- otu_table(ASV_table, taxa_are_rows = TRUE)
+TAX_table <- tax_table(as.matrix(TAX_table))
+
+# Create new phyloseq object
+LT_physeq_1 <- phyloseq(ASV_table, TAX_table)
+
+# Merge phyloseq object with sample data
+LT_physeq_2 <- merge_phyloseq(LT_physeq_1, sample_data)
+```
+
+```{r cluster ASVs}
+# Extract DNA sequences from seqtab.nochim and assign taxon names
+names(dna) <- taxa_names(LT_physeq_2)
+
+# Merge DNA sequences with ps1 to create ps2
+LT_physeq_3 <- merge_phyloseq(LT_physeq_2, dna)
+
+# Use DNA sequences from ps2
+dna <- refseq(LT_physeq_3)
+
+clusters <- DECIPHER::Clusterize(
+  dna, 
+  cutoff = 0.03, # decide on level based on resolution of positive controls (see next chunk)!
+  processors = 4) # Set the number of processors for clustering (check your own computer to see how many CPUs you have)
+
+# Merge taxa in ps2 based on clusters
+LT_physeq_97 <- speedyseq::merge_taxa_vec(
+  LT_physeq_3, 
+  group = clusters$cluster,
+  tax_adjust = 0
+)
+
+LT_physeq_97_pruned <- prune_taxa(taxa_sums(LT_physeq_97) > 0, LT_physeq_97)
+```
+
+```{r evaluate mock samples}
+# Filter phyloseq object to retain only positive controls (mock samples)
+positive_controls <- subset_samples(LT_physeq_98_pruned, sample_type == "mock")
+
+# Get OTU table for positive controls
+otu_table_positive_controls <- otu_table(positive_controls)
+
+# Calculate row sums
+row_sums <- rowSums(otu_table_positive_controls)
+
+# Subset OTU table to exclude rows with sum of 0
+otu_table_positive_controls_filtered <- otu_table_positive_controls[row_sums > 0, ]
+
+# Sort OTU table by row sums in decreasing order
+sorted_otu_table <- otu_table_positive_controls_filtered[order(row_sums[row_sums > 0], decreasing = TRUE), ]
+
+# Calculate relative abundance 
+sorted_otu_table_comp <- transform_sample_counts(sorted_otu_table, function(x) x/sum(x))
+
+# Get ASV names 
+otu_row_names <- row.names(sorted_otu_table)
+
+# Get taxonomy table for positive controls
+tax_table_positive_controls <- tax_table(positive_controls)
+
+# Filter tax table based on the names of the sorted OTU vector
+filtered_tax_table <- tax_table_positive_controls[otu_row_names, ]
+
+# Get DNA sequences for positive controls
+dna_mock <- refseq(positive_controls)
+
+# Filter DNA sequences based on otu_row_names
+dna_mock_filtered <- dna_mock[otu_row_names]
+
+# Create a small dataframe containing all the output
+output_df <- data.frame(
+  OTU = as.data.frame(sorted_otu_table),
+  COMP = as.data.frame(sorted_otu_table_comp),
+  TAX = as.data.frame(filtered_tax_table), 
+  DNA = as.data.frame(dna_mock_filtered)
+)
+
+# Print the output dataframe
+print(output_df)
+
+# save results as excel file
+write_xlsx(output_df, path= "mock_controls_098.xlsx")
+```
+
+```{r save final phyloseq objects}
+# save new phyloseq objects
+saveRDS(LT_physeq_98_pruned, "LT_physeq_scrub_0.98clustered.rds")
+```

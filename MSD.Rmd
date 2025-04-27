@@ -1,0 +1,959 @@
+---
+title: "MSD"
+author: "Sigri"
+date: "2024-10-23"
+output: html_document
+---
+
+# Load libraries
+```{r load libraries}
+library(naniar)
+library(multcompView)
+library(rstatix)
+library(multcompView)
+library(readxl)
+library(tidyverse)
+library(ggpubr)
+library(ggbeeswarm)
+library(ggh4x)
+library(EnvStats)
+library(modelsummary)
+library(ggpmisc)
+library(sjPlot)
+```
+
+# Import data
+```{r}
+MSD_df <- readxl::read_xlsx("MS1_MSD.xlsx", guess_max = 10000) %>%
+  filter(biomarker != "C-peptide") %>%
+  mutate(biomarker = str_replace_all(biomarker, c("TNF-α" = "TNFa", "MCP-1" = "MCP1", "IL-6" = "IL6", "IL-10" = "IL10", "GLP-1" = "GLP1")))
+
+```
+
+```{r add Hp loads}
+# Load Hp loads data
+MS1_Hp_loads <- read_xlsx("MS1_Hp_loads.xlsx") %>%
+  select(mouseID, experiment, total_bact_load, avg_copies, total_Hp_abund, total_DNA_conc, Hp_copies_std) 
+
+# subset Hp loads data by experiment
+MS1_Hp_loads_ST <- MS1_Hp_loads %>% 
+  filter(experiment == "ST") %>%
+  select(-experiment)
+
+# Add Hp loads to MSD dataframe 
+MSD_df <- MSD_df %>% 
+  inner_join(MS1_Hp_loads_ST, by = "mouseID") 
+
+MSD_df <- MSD_df %>% mutate(Hp_load = ifelse(Hp_copies_std > 1000, "high", "low"))
+
+# Remove Hp mice with low bacterial load
+MSD_df <- MSD_df %>%
+  mutate(Hp_load = ifelse(is.na(Hp_load) & treatment == "Ctrl", "Ctrl", Hp_load)) %>%
+  filter(Hp_load != "low") 
+```
+
+```{r}
+# Count missing values by biomarker and sex
+missing_counts <- MSD_df %>%
+  group_by(biomarker, sex) %>%
+  summarise(
+    total_missing = sum(is.na(conc_undiluted)),
+    IL6_missing = sum(is.na(conc_undiluted) & biomarker == "IL6"),
+    Ghrelin_missing = sum(is.na(conc_undiluted) & biomarker == "Ghrelin"),
+    leptin_missing = sum(is.na(conc_undiluted) & biomarker == "leptin"),
+    Insulin_missing = sum(is.na(conc_undiluted) & biomarker == "Insulin"),
+    IL10_missing = sum(is.na(conc_undiluted) & biomarker == "IL10"),
+    MCP1_missing = sum(is.na(conc_undiluted) & biomarker == "MCP1"),
+    TNF_alpha_missing = sum(is.na(conc_undiluted) & biomarker == "TNFa"),
+    GLP1_missing = sum(is.na(conc_undiluted) & biomarker == "GLP1"),
+    PYY_missing = sum(is.na(conc_undiluted) & biomarker == "PYY"),
+    female_missing = sum(is.na(conc_undiluted) & sex == "female"),
+    male_missing = sum(is.na(conc_undiluted) & sex == "male"),
+    female_IL6_missing = sum(is.na(conc_undiluted) & sex == "female" & biomarker == "IL6"),
+    male_IL6_missing = sum(is.na(conc_undiluted) & sex == "male" & biomarker == "IL6"),
+    Ctrl_missing = sum(is.na(conc_undiluted) & treatment == "Ctrl"),
+    Hp_missing = sum(is.na(conc_undiluted) & treatment == "Hp")
+  )
+
+# View the missing counts
+print(missing_counts)
+
+# Convert NAs to 0s and add pseudocount
+MSD_IL6noNAs_df <- MSD_df %>%
+  mutate(
+    conc_IL6noNA = case_when(
+      biomarker == "IL6" & is.na(conc_undiluted) ~ 0.05, # add pseudocount to missing IL6 values
+      TRUE ~ conc_undiluted), 
+    conc_log10 = log10(conc_IL6noNA), 
+    Hp_copies_std_log10 = log10(Hp_copies_std)
+  )
+
+MSD_IL6noNAs_df <- MSD_IL6noNAs_df %>% 
+  mutate(Hp_load = ifelse(is.na(Hp_load) & treatment == "Ctrl", "ctrl", Hp_load)) %>%
+  filter(Hp_load != "low")# %>%
+#  mutate(hpload_diet = paste(Hp_load, diet, sep = "_"))
+```
+
+```{r test effect of treatment on baseline levels}
+# Subset dataframe to baseline
+MSD_IL6noNAs_baseline_df <- MSD_IL6noNAs_df %>%
+  filter(timepoint == "b0")
+
+# Extract unique biomarkers
+biomarkers <- unique(MSD_IL6noNAs_baseline_df$biomarker)
+
+# Initialize an empty list to store results
+results <- list()
+
+# Loop through each biomarker
+for (biomarker in biomarkers) {
+  # Filter the dataframe for the current biomarker
+  df_filtered <- MSD_IL6noNAs_baseline_df %>% filter(biomarker == !!biomarker)
+  
+  # Run the Wilcoxon test and store the result
+  result <- df_filtered %>%
+    group_by(sex) %>%
+    wilcox_test(conc_log10 ~ treatment) %>%
+    add_significance() %>%
+    add_xy_position()
+  
+  # Add the result to the list
+  results[[biomarker]] <- result
+}
+
+# Combine all results into a single dataframe
+final_results <- bind_rows(results, .id = "biomarker")
+
+# Print results
+final_results # only significant differences for Leptin in males
+```
+
+# Leptin 
+```{r plot baseline levels}
+leptin_df <- MSD_IL6noNAs_df %>%
+  filter(biomarker=="Leptin") %>%
+  filter(!is.na(conc_IL6noNA))
+
+baseline_leptin <- leptin_df %>%
+  filter(timepoint == "b0") %>%
+  ggplot(aes(x = treatment, y = `conc_log10`, color = treatment)) +
+  geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.75) +
+  geom_jitter(aes(color = treatment), height = 0, width = 0.2, size = 2) +
+  scale_y_continuous(limits=c(2.95, 4.55), breaks = c(3,3.5,4,4.5)) +
+  scale_colour_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  theme(legend.position = "none") +
+  theme(legend.title = element_blank()) +
+  labs(x = "Treatment", y = expression(paste("log", "(Leptin pg/mL)"))) +
+  facet_nested(~sex) +
+  stat_n_text(size = 4, alpha = 0.75, y.pos = 2.95) +
+  scale_x_discrete(labels = c("Control", "H. pylori")) +
+  ggtitle("LEPTIN") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(face = c("plain", "italic"), size = 12),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_text(size = 12, color = NA),
+    axis.text.y = element_text(size = 12),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+    legend.position = "none",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 12),
+    legend.key.size = unit(1, 'cm'),
+    strip.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.background = element_rect(fill = 'transparent'), # transparent panel bg
+    plot.background = element_rect(fill = 'transparent', color = NA), # transparent plot bg
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+    legend.background = element_rect(fill = 'transparent'), # transparent legend bg
+    legend.box.background = element_rect(fill = 'transparent') # transparent legend panel
+  )
+baseline_leptin
+
+# test effect of treatment
+stat_leptin <- leptin_df %>%
+  filter(timepoint=="b0") %>%
+  group_by(sex) %>%
+  wilcox_test(conc_log10 ~ treatment) %>% add_significance() %>%  add_xy_position() 
+
+baseline_leptin_sign <- baseline_leptin + stat_pvalue_manual(stat_leptin, hide.ns = TRUE, y.position = 4.5, size = 6)
+baseline_leptin_sign
+```
+
+```{r leptin-endpoint}
+leptin_endpoint_df <-  leptin_df %>% 
+  filter(!is.na(conc_log10),
+         timepoint == "b4") %>% 
+  mutate(new_wat_weight = ifelse(sex == "female" & mouseID != "EO5.1_FR", wat_weight / 2, wat_weight)) # only one WAT depot was collected from EO5.1_FR
+
+endpoint_leptin <- leptin_endpoint_df %>%
+  ggplot(aes(x = treatment, y = `conc_log10`, color = treatment)) +
+  geom_boxplot(aes(fill=treatment), alpha=0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(aes(color = treatment), height = 0, width = .2, size=2) +
+  theme_pubr(border = TRUE) +
+  scale_colour_manual(values = c( "Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c( "Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) +
+  scale_y_continuous(limits=c(1.95,5.05), breaks=c(2,3,4,5)) +
+  theme(legend.position="none") +
+  theme(legend.title = element_blank()) +
+  labs(y = expression(paste("log"[10],"(Leptin pg/mL)"))) + 
+  facet_grid(sex ~ diet) + 
+  stat_n_text(size = 4, alpha=0.75, y.pos = 1.95) + 
+  ggtitle("LEPTIN") + 
+  theme_bw() + 
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(size = 12),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.background = element_rect(fill = 'transparent'), # transparent panel bg
+    plot.background = element_rect(fill = 'transparent', color = NA), # transparent plot bg
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+    legend.background = element_rect(fill = 'transparent'), # transparent legend bg
+    legend.box.background = element_blank() # transparent legend panel
+  ) + 
+  guides(color = guide_legend(override.aes = list(size = 5))) # increase legend symbol size
+endpoint_leptin
+
+# Perform two-way ANOVA for each sex separately
+aov_leptin_female <- leptin_df %>%
+  filter(timepoint == "b4", sex == "female") %>%
+  aov(conc_log10 ~ treatment * diet, data = .)
+summary(aov_leptin_female)
+
+aov_leptin_male <- leptin_df %>%
+  filter(timepoint == "b4", sex == "male") %>%
+  aov(conc_log10 ~ treatment * diet, data = .)
+summary(aov_leptin_male)
+
+# Perform Tukey's HSD test for each sex
+TUKEY_leptin_female <- TukeyHSD(aov_leptin_female)
+TUKEY_leptin_male <- TukeyHSD(aov_leptin_male)
+
+# Extract the Tukey HSD results for the treatment factor
+TUKEY_leptin_female_results <- TUKEY_leptin_female$treatment
+TUKEY_leptin_male_results <- TUKEY_leptin_male$treatment
+
+# Generate the letters for compact letter display
+TUKEY_leptin_female_letters <- multcompLetters4(aov_leptin_female, TUKEY_leptin_female)
+TUKEY_leptin_male_letters <- multcompLetters4(aov_leptin_male, TUKEY_leptin_male)
+
+# Extracting the compact letter display and adding to the Tk table
+cld_leptin_female <- as.data.frame.list(TUKEY_leptin_female_letters$`treatment:diet`) %>%
+  select(Letters)
+cld_leptin_male <- as.data.frame.list(TUKEY_leptin_male_letters$`treatment:diet`) %>%
+  select(Letters)
+
+# Convert row names to a column
+cld_leptin_female <- cld_leptin_female %>%
+  rownames_to_column(var = "variable") %>%
+  separate(variable, into = c("treatment", "diet"), sep = ":") %>%
+  mutate(sex = "female") 
+
+cld_leptin_male <- cld_leptin_male %>%
+  rownames_to_column(var = "variable") %>%
+  separate(variable, into = c("treatment", "diet"), sep = ":") %>%
+  mutate(sex = "male")
+
+# Combine the results
+cld_leptin <- bind_rows(cld_leptin_female, cld_leptin_male)
+
+# Add text annotations
+endpoint_leptin_text <- endpoint_leptin +
+  geom_text(data = cld_leptin, aes(x = treatment, y = 5, label = Letters, color = "black"), size = 4, hjust = .5, show.legend = FALSE)
+endpoint_leptin_text
+```
+
+```{r correlate Leptin and WAT weight at sacrifice}
+# Calculate sample size for each facet
+sample_size_leptin_wat <-   leptin_endpoint_df %>%
+  group_by(sex, diet, treatment) %>%
+  summarise(n = n()) %>%
+  mutate(vjust = ifelse(treatment == "Ctrl", 1.5, 3))
+
+# Plot data
+plot_WAT_leptin_correlation <- leptin_endpoint_df %>%
+  ggplot(aes(x = new_wat_weight, y =conc_log10, colour = treatment)) +
+  geom_point(aes(color = treatment), size = 3) +
+  facet_nested(~sex + diet, nest_line = element_line(linetype = 1)) + 
+  stat_poly_line(se = FALSE, show.legend = FALSE) +
+  stat_poly_eq(
+               vjust = 0.1,  # Adjust vertical position
+               #hjust = -1.5,  # Adjust horizontal position
+               size = 4) +  # Change size if needed
+  scale_y_continuous(limits=c(2, 5.1), breaks=c(2.0, 2.5, 3,3.5,4,4.5, 5)) +
+  labs(x = "perigonadal WAT weight (g)", y = expression(paste("log"[10],"(Leptin pg/mL)"))) + 
+  scale_colour_manual(values = c( "Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c( "Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+  ) + 
+  guides(color = guide_legend(override.aes = list(size = 5))) + # increase legend symbol size
+  geom_text(data = sample_size_leptin_wat, aes(x = Inf, y = Inf, label = paste("n =", n), color = treatment, vjust = vjust), 
+            hjust = 1.1, size = 4, inherit.aes = FALSE, show.legend = FALSE)
+
+plot_WAT_leptin_correlation
+
+plot_WAT_leptin_correlation_stat <- plot_WAT_leptin_correlation + stat_cor(aes(color = treatment), method="pearson", 
+                                                             label.x.npc = "left", 
+                                                             label.y.npc = 0.075, 
+                                                             show.legend = FALSE)
+plot_WAT_leptin_correlation_stat
+
+# Save plot 
+#ggsave("25.03.03_MS1_FigS4A.jpeg", plot = plot_WAT_leptin_correlation_stat, device = "jpeg", path = ("supplementary"), units="cm", width=21, height=12.5, dpi=300)
+```
+
+```{r correlate Leptin and Hp loads at sacrifice}
+# Filter out control mice
+leptin_endpoint_hp_df <- leptin_endpoint_df %>%
+  filter(treatment == "Hp")
+         
+# Calculate sample size for each facet
+sample_size_leptin_hp <-   leptin_endpoint_hp_df %>%
+  group_by(sex, diet, treatment) %>%
+  summarise(n = n()) %>%
+  mutate(vjust = ifelse(treatment == "Hp", 1.5, 3))
+
+# Plot data
+plot_Hp_leptin_correlation <- leptin_endpoint_hp_df %>%
+  ggplot(aes(x = Hp_copies_std_log10, y =conc_log10, colour = treatment)) +
+  geom_point(aes(color = treatment), size = 3) +
+  facet_nested(~sex + diet, nest_line = element_line(linetype = 1)) + 
+  stat_poly_line(se = FALSE, show.legend = FALSE) +
+  stat_poly_eq(
+               vjust = 0.1,  # Adjust vertical position
+               #hjust = -1.5,  # Adjust horizontal position
+               size = 4) +  # Change size if needed
+  scale_y_continuous(limits=c(2.5, 5.0), breaks=c(2.5, 3.0, 3.5, 4.0, 4.5, 5)) +
+  scale_x_continuous(limits = c(0.9, 5.1), breaks=c(1, 2, 3, 4, 5)) +
+  labs(
+  y = expression(paste("log"[10], "(Leptin pg/mL)")),
+  x = expression(paste("log"[10], "(", italic("H. pylori glmM"), " copies/ng total DNA)"))) + 
+  scale_colour_manual(values = c( "Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c( "Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    legend.position = "none",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+  ) + 
+  guides(color = guide_legend(override.aes = list(size = 5))) + # increase legend symbol size
+  geom_text(data = sample_size_leptin_hp, aes(x = Inf, y = Inf, label = paste("n =", n), color = treatment, vjust = vjust), 
+            hjust = 1.1, size = 4, inherit.aes = FALSE)
+
+plot_Hp_leptin_correlation
+
+plot_Hp_leptin_correlation_stat <- plot_Hp_leptin_correlation + stat_cor(method="pearson", label.x.npc = "left", label.y.npc = 0, show.legend = FALSE)
+plot_Hp_leptin_correlation_stat
+
+# Save plot 
+#ggsave("25.03.03_MS1_FigS4B.jpeg", plot = plot_Hp_leptin_correlation_stat, device = "jpeg", path = ("supplementary"), units="cm", width=21, height=12.5, dpi=300)
+```
+
+```{r combine leptin plots}
+MS1_leptin_correlations <- ggpubr::ggarrange(
+  plot_WAT_leptin_correlation_stat, 
+  plot_Hp_leptin_correlation_stat,
+  nrow = 2, 
+  #widths = c(0.7, 0.1, 1),
+  labels = c("A", "B"), 
+  align="h"
+  )
+MS1_leptin_correlations
+
+ggsave("25.03.03_leptin_correlations.jpeg", plot = MS1_leptin_correlations, device = "jpeg", path = ("supplementary"), units="cm", width=21, height=25, dpi=300)
+```
+
+# MCP-1 
+```{r MCP1-endpoint}
+MCP1_endpoint_df <-  MSD_IL6noNAs_df %>%
+  filter(biomarker=="MCP1",
+         !is.na(conc_IL6noNA), 
+         timepoint == "b4") %>%
+  mutate(new_wat_weight = ifelse(sex == "female" & mouseID != "EO5.1_FR", wat_weight / 2, wat_weight)) # only one WAT depot was collected from EO5.1_FR
+
+endpoint_MCP1 <- MCP1_endpoint_df %>%
+  ggplot(aes(x = treatment, y = `conc_log10`, color = treatment)) +
+  geom_boxplot(aes(fill=treatment), alpha=0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(aes(color = treatment), height = 0, width = .2, size=2) +
+  theme_pubr(border = TRUE) +
+  scale_colour_manual(values = c( "Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c( "Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) +
+  scale_y_continuous(limits=c(2.20,3.05), breaks=c(2.25, 2.5, 2.75, 3)) +
+  theme(legend.position="none") +
+  theme(legend.title = element_blank()) +
+  labs(y = expression(paste("log"[10],"(MCP-1 pg/mL)"))) + 
+  facet_grid(sex ~ diet) + 
+  stat_n_text(size = 4, alpha=0.75, y.pos = 2.2) + 
+  ggtitle("MCP-1") + 
+  theme_bw() + 
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(size = 12),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.background = element_rect(fill = 'transparent'), # transparent panel bg
+    plot.background = element_rect(fill = 'transparent', color = NA), # transparent plot bg
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+    legend.background = element_rect(fill = 'transparent'), # transparent legend bg
+    legend.box.background = element_blank() # transparent legend panel
+  ) + 
+  guides(color = guide_legend(override.aes = list(size = 5))) # increase legend symbol size
+
+endpoint_MCP1
+
+# Perform two-way ANOVA for each sex separately
+aov_MCP1_female <- MCP1_endpoint_df %>%
+  filter(sex == "female") %>%
+  aov(conc_log10 ~ treatment * diet, data = .)
+summary(aov_MCP1_female)
+
+aov_MCP1_male <- MCP1_endpoint_df %>%
+  filter(sex == "male") %>%
+  aov(conc_log10 ~ treatment * diet, data = .)
+summary(aov_MCP1_male)
+
+# Perform Tukey's HSD test for each sex
+TUKEY_MCP1_female <- TukeyHSD(aov_MCP1_female)
+TUKEY_MCP1_male <- TukeyHSD(aov_MCP1_male)
+
+# Extract the Tukey HSD results for the treatment factor
+TUKEY_MCP1_female_results <- TUKEY_MCP1_female$treatment
+TUKEY_MCP1_male_results <- TUKEY_MCP1_male$treatment
+
+# Generate the letters for compact letter display
+TUKEY_MCP1_female_letters <- multcompLetters4(aov_MCP1_female, TUKEY_MCP1_female)
+TUKEY_MCP1_male_letters <- multcompLetters4(aov_MCP1_male, TUKEY_MCP1_male)
+
+# Extracting the compact letter display and adding to the Tk table
+cld_MCP1_female <- as.data.frame.list(TUKEY_MCP1_female_letters$`treatment:diet`)
+cld_MCP1_male <- as.data.frame.list(TUKEY_MCP1_male_letters$`treatment:diet`)
+
+# Convert row names to a column
+cld_MCP1_female <- cld_MCP1_female %>%
+  rownames_to_column(var = "variable") %>%
+  separate(variable, into = c("treatment", "diet"), sep = ":") %>%
+  mutate(sex = "female")
+
+cld_MCP1_female[cld_MCP1_female == "a"] <- NA # remove letters since they are all the same (not sign. different)
+
+cld_MCP1_male <- cld_MCP1_male %>%
+  rownames_to_column(var = "variable") %>%
+  separate(variable, into = c("treatment", "diet"), sep = ":") %>%
+  mutate(sex = "male")
+
+# Combine the results
+cld_MCP1 <- bind_rows(cld_MCP1_female, cld_MCP1_male)
+
+# Add text annotations
+endpoint_MCP1_text <- endpoint_MCP1 +
+  geom_text(data = cld_MCP1, aes(x = treatment, y = 3.03, label = Letters, color = "black"), size = 4, hjust = .5, show.legend = FALSE)
+endpoint_MCP1_text
+```
+
+```{r correlate MCP-1 and WAT weight at sacrifice}
+# Plot data
+plot_WAT_MCP1_correlation <- 
+  MCP1_endpoint_df %>% 
+  ggplot(aes(x = new_wat_weight, y = conc_log10, colour = treatment)) +
+  geom_point(aes(color = treatment), size = 3) +
+  facet_nested(~sex + diet , nest_line = element_line(linetype = 1)) + 
+  stat_poly_line(se = FALSE, show.legend = FALSE) +
+  stat_poly_eq(
+               #vjust = 0.4,  # Adjust vertical position
+              #hjust = -1.5,  # Adjust horizontal position
+               size = 4) +  # Change size if needed
+  #scale_y_continuous(limits=c(2, 3), breaks=c(2,2.5,3)) +
+  labs(x = "perigonadal WAT weight (g)", y = expression(paste("log"[10],"(MCP-1 pg/mL)"))) + 
+  scale_colour_manual(values = c( "Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c( "Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+  ) + 
+  guides(color = guide_legend(override.aes = list(size = 5))) # increase legend symbol size
+
+plot_WAT_MCP1_correlation
+
+plot_WAT_MCP1_correlation_stat <- plot_WAT_MCP1_correlation + stat_cor(method="pearson", 
+                                                             label.x.npc = "left", 
+                                                             label.y.npc = 0)
+plot_WAT_MCP1_correlation_stat
+```
+
+```{r correlate MCP1 and Hp loads at sacrifice}
+# Filter out control mice
+MCP1_endpoint_hp_df <- MCP1_endpoint_df %>%
+  filter(treatment == "Hp")
+
+# Calculate sample size for each facet
+sample_size_mcp1_hp <-   MCP1_endpoint_hp_df %>%
+  group_by(sex, treatment) %>%
+  summarise(n = n()) %>%
+  mutate(vjust = ifelse(treatment == "Hp", 1.5, 3))
+
+# Plot data
+plot_Hp_mcp1_correlation <- MCP1_endpoint_hp_df %>% 
+  ggplot(aes(x = Hp_copies_std_log10, y =conc_log10, colour = treatment)) +
+  geom_point(aes(color = treatment, shape = diet), size = 3, show.legend = FALSE) +
+  facet_nested(~sex, nest_line = element_line(linetype = 1)) + 
+  geom_smooth(method = "lm", se = FALSE, aes(color = treatment, fill = treatment), alpha = 0.2, show.legend = FALSE) +  # Use geom_smooth for SE shading
+  #stat_poly_line(se = FALSE, show.legend = FALSE) +
+  stat_poly_eq(
+               vjust = 0,  # Adjust vertical position
+               #hjust = -1.5,  # Adjust horizontal position
+               size = 4) +  # Change size if needed
+  scale_y_continuous(limits=c(2.25, 3.1), breaks=c(2.3, 2.5, 2.7, 2.9, 3.1)) +
+  scale_x_continuous(limits = c(0.9, 5.1), breaks=c(1, 2, 3, 4, 5)) +
+  labs(
+  y = expression(paste("log"[10], "(MCP-1 pg/mL)")),
+  x = expression(paste("log"[10], "(", italic("H. pylori glmM"), " copies/ng total DNA)"))) + 
+  scale_colour_manual(values = c("Hp" = "#E69F00"), labels = c(expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Hp" = "#E69F00"), labels = c(expression(italic("H. pylori")))) +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+  ) + 
+  guides(color = guide_legend(override.aes = list(size = 5))) +  # increase legend symbol size
+    geom_text(data = sample_size_mcp1_hp, aes(x = Inf, y = Inf, label = paste("n =", n), color = treatment, vjust = vjust), 
+            hjust = 1.1, size = 4, inherit.aes = FALSE, show.legend = FALSE)
+
+plot_Hp_mcp1_correlation
+
+plot_Hp_mcp1_correlation_stat <- plot_Hp_mcp1_correlation + stat_cor(method="pearson", label.x.npc = "left", label.y.npc = 0, show.legend = FALSE)
+plot_Hp_mcp1_correlation_stat
+  
+# Save plot 
+ggsave("25.02.28_Hp_mcp1_corr.jpeg", plot = plot_Hp_mcp1_correlation_stat, device = "jpeg", path = ("supplementary"), units="cm", width=21, height=12.5, dpi=300)
+```
+
+# IL-6
+```{r IL6-endpoint}
+IL6_endpoint_df <- MSD_IL6noNAs_df %>%
+  filter(biomarker=="IL6", 
+         timepoint=="b4")
+
+endpoint_IL6 <- IL6_endpoint_df %>%
+  ggplot(aes(x = treatment, y = `conc_log10`, color = treatment)) +
+  geom_boxplot(aes(fill=treatment), alpha=0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(aes(color = treatment), height = 0, width = .2, size=2) +
+  theme_pubr(border = TRUE) +
+  scale_colour_manual(values = c( "Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c( "Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) +
+  scale_y_continuous(limits=c(-2.05, 4.05), breaks=c(-2, 0, 2, 4)) +
+  theme(legend.position="none") +
+  theme(legend.title = element_blank()) +
+  labs(y = expression(paste("log"[10],"(IL-6 pg/mL)"))) + 
+  facet_grid(sex ~ diet) + 
+  stat_n_text(size = 4, alpha=0.75, y.pos = -2.05) + 
+  ggtitle("IL-6") + 
+  theme_bw() + 
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(size = 12),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.background = element_rect(fill = 'transparent'), # transparent panel bg
+    plot.background = element_rect(fill = 'transparent', color = NA), # transparent plot bg
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+    legend.background = element_rect(fill = 'transparent'), # transparent legend bg
+    legend.box.background = element_blank() # transparent legend panel
+  ) + 
+  guides(color = guide_legend(override.aes = list(size = 5))) # increase legend symbol size
+endpoint_IL6
+
+# Perform two-way ANOVA for each sex separately
+aov_IL6_female <- IL6_endpoint_df %>%
+  filter(sex == "female") %>%
+  aov(conc_log10 ~ treatment * diet, data = .)
+summary(aov_IL6_female)
+
+aov_IL6_male <- IL6_endpoint_df %>%
+  filter(sex == "male") %>%
+  aov(conc_log10 ~ treatment * diet, data = .)
+summary(aov_IL6_male)
+
+# Perform Tukey's HSD test for each sex
+TUKEY_IL6_female <- TukeyHSD(aov_IL6_female)
+TUKEY_IL6_male <- TukeyHSD(aov_IL6_male)
+
+# Extract the Tukey HSD results for the treatment factor
+TUKEY_IL6_female_results <- TUKEY_IL6_female$treatment
+TUKEY_IL6_male_results <- TUKEY_IL6_male$treatment
+
+# Generate the letters for compact letter display
+TUKEY_IL6_female_letters <- multcompLetters4(aov_IL6_female, TUKEY_IL6_female)
+TUKEY_IL6_male_letters <- multcompLetters4(aov_IL6_male, TUKEY_IL6_male)
+
+# Extracting the compact letter display and adding to the Tk table
+cld_IL6_female <- as.data.frame.list(TUKEY_IL6_female_letters$`treatment:diet`)
+cld_IL6_male <- as.data.frame.list(TUKEY_IL6_male_letters$`treatment:diet`)
+
+# Convert row names to a column
+cld_IL6_female <- cld_IL6_female %>%
+  rownames_to_column(var = "variable") %>%
+  separate(variable, into = c("treatment", "diet"), sep = ":") %>%
+  mutate(sex = "female") 
+
+cld_IL6_female[cld_IL6_female == "a"] <- NA # remove letters since they are all the same (not sign. different)
+
+cld_IL6_male <- cld_IL6_male %>%
+  rownames_to_column(var = "variable") %>%
+  separate(variable, into = c("treatment", "diet"), sep = ":") %>%
+  mutate(sex = "male")
+
+# Combine the results
+cld_IL6 <- bind_rows(cld_IL6_female, cld_IL6_male)
+
+# Add text annotations
+endpoint_IL6_text <- endpoint_IL6 +
+  geom_text(data = cld_IL6, aes(x = treatment, y = 4, label = Letters, color = "black"), size = 4, hjust = .5, show.legend = FALSE)
+endpoint_IL6_text
+```
+
+```{r correlate IL-6 and Hp loads at sacrifice}
+# Filter out control mice
+IL6_endpoint_hp_df <- IL6_endpoint_df %>%
+  filter(treatment == "Hp")
+
+# Calculate sample size for each facet
+sample_size_IL6_hp <-   IL6_endpoint_hp_df %>%
+  group_by(sex, diet, treatment) %>%
+  summarise(n = n()) %>%
+  mutate(vjust = ifelse(treatment == "Hp", 2, 3))
+
+# Plot data
+plot_Hp_IL6_correlation <- IL6_endpoint_hp_df %>% 
+  ggplot(aes(x = Hp_copies_std_log10, y =conc_log10, colour = treatment)) +
+  geom_point(aes(color = treatment), size = 3, show.legend = FALSE) +
+  facet_nested(~sex + diet, nest_line = element_line(linetype = 1)) + 
+  geom_smooth(method = "lm", se = FALSE, aes(color = treatment, fill = treatment), alpha = 0.2, show.legend = FALSE) +  # Use geom_smooth for SE shading
+  #stat_poly_line(se = FALSE, show.legend = FALSE) +
+  stat_poly_eq(
+               vjust = 0.4,  # Adjust vertical position
+               #hjust = -1.5,  # Adjust horizontal position
+               size = 4) +  # Change size if needed
+  #scale_y_continuous(limits=c(2.28, 3.1), breaks=c(2.3, 2.5, 2.7, 2.9, 3.1)) +
+  scale_x_continuous(limits = c(0.9, 5.1), breaks=c(1, 2, 3, 4, 5)) +
+  labs(
+  y = expression(paste("log"[10], "(MCP-1 pg/mL)")),
+  x = expression(paste("log"[10], "(", italic("H. pylori"), " glmM copies/ng total DNA)"))) + 
+  scale_colour_manual(values = c("Hp" = "#E69F00"), labels = c(expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Hp" = "#E69F00"), labels = c(expression(italic("H. pylori")))) +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+  ) + 
+  guides(color = guide_legend(override.aes = list(size = 5))) +  # increase legend symbol size
+    geom_text(data = sample_size_IL6_hp, aes(x = Inf, y = Inf, label = paste("n =", n), color = treatment, vjust = vjust), 
+            hjust = 1.1, size = 4, inherit.aes = FALSE, show.legend = FALSE)
+
+plot_Hp_IL6_correlation
+
+plot_Hp_IL6_correlation_stat <- plot_Hp_IL6_correlation + stat_cor(method="pearson", label.x.npc = "left", label.y.npc = "bottom")
+plot_Hp_IL6_correlation_stat
+```
+
+# Day 3-16: Linear mixed effect models 
+```{r LMM loop through all biomarkers}
+LMM_df <- MSD_IL6noNAs_df %>%
+  filter(days_on_diet > 0 & days_on_diet < 23) %>%
+  mutate(conc_log10 = log10(conc_IL6noNA))
+
+LMM_df$time_factor <- as.factor(LMM_df$timepoint)
+
+biomarkers_list <- unique(LMM_df$biomarker)
+
+# Create an empty list to store the models
+models <- list()
+
+# Loop over the bacterial families
+for (biomarker in biomarkers_list) {
+  # Print the name of the family
+  print(paste(biomarker))
+  
+  # Subset the data for the current family
+  data_subset <- LMM_df[LMM_df$biomarker == biomarker, ]
+  
+  # Fit the model
+  model <- lmerTest::lmer(formula = conc_log10 ~ treatment + diet + sex + treatment:diet + (1|mouseID) + (1|time_factor), data = data_subset)
+  
+  # Print the summary
+  print(summary(model))
+  
+  # Save the model in the list with the family name as the key
+  models[[biomarker]] <- model
+}
+
+```
+
+```{r LMM for Hp significant ones}
+LMM_IL6_df <- LMM_df %>% filter(biomarker=="IL6")
+
+model_IL6 <- lmerTest::lmer(formula = conc_log10 ~ treatment + diet + sex + treatment:diet + (1|mouseID), data = LMM_IL6_df, REML=FALSE)
+print(summary(model_IL6))
+
+LMM_leptin_df <- LMM_df %>% filter(biomarker=="Leptin")
+
+model_leptin <- lmerTest::lmer(formula = conc_log10 ~ treatment + diet + sex + treatment:diet +  (1|mouseID), data = LMM_leptin_df, REML=FALSE)
+print(summary(model_leptin))
+
+LMM_ghrelin_df <- LMM_df %>% filter(biomarker=="Ghrelin")
+
+model_ghrelin <- lmerTest::lmer(formula = conc_log10 ~ treatment + diet + sex + treatment:diet + (1|mouseID), data = LMM_ghrelin_df, REML=FALSE)
+print(summary(model_ghrelin))
+
+tab_model(model_IL6)
+tab_model(model_leptin)
+tab_model(model_ghrelin)
+```
+
+```{r prepare LMM dataframes for plot}
+model_ghrelin_df <- modelplot(model_ghrelin, draw = FALSE) 
+model_ghrelin_df <- model_ghrelin_df %>% slice(1:(n()-2))
+model_ghrelin_df$model <- "Ghrelin"
+
+model_leptin_df <- modelplot(model_leptin, draw = FALSE) 
+model_leptin_df <- model_leptin_df %>% slice(1:(n()-2))
+model_leptin_df$model <- "Leptin"
+
+model_IL6_df <- modelplot(model_IL6, draw = FALSE) 
+model_IL6_df <- model_IL6_df %>% slice(1:(n()-2))
+model_IL6_df$model <- "IL6"
+
+# Combine these data.frames
+LMM_ghrelin_leptin_IL6_df <- data.frame(rbind(model_ghrelin_df,
+                                  model_leptin_df, 
+                                  model_IL6_df)) %>%
+  mutate(model = case_when(
+    model == "Leptin" ~ "LEPTIN",
+    model == "IL6" ~ "IL-6", # already capitalized correctly
+    model == "Ghrelin" ~ "GHRELIN",
+    TRUE ~ model # keep other values as they are
+  ))
+```
+
+```{r plot LMMs}
+# Define a vector of shapes for each variable
+shapes <- c("(Intercept)" = 22, "treatmentHp" = 21, "sexmale" =24, "dietHFD" = 23, "treatmentHp:dietHFD" = 25)
+labels <- c("(Intercept)" = "Intercept", "treatmentHp" = "treatment (Hp)", "sexmale" = "sex (male)", "dietHFD" = "diet (HFD)", "treatmentHp:dietHFD" = "Hp:HFD")
+
+# add a new column to the data indicating which variables are significant
+LMM_ghrelin_leptin_IL6_df$significant <- ifelse(LMM_ghrelin_leptin_IL6_df$p.value < 0.05, "yes", "no")
+LMM_ghrelin_leptin_IL6_df$significant <- as.factor(LMM_ghrelin_leptin_IL6_df$significant)
+
+LMM_ghrelin_leptin_IL6_df$facet <- "hei" # add fake facet (just for graphic design)
+
+LMM_leptin_ghrelin_IL6 <- ggplot(LMM_ghrelin_leptin_IL6_df) +
+  geom_pointrange(aes(x = model, 
+                      y = estimate,
+                      ymin = conf.low,
+                      ymax = conf.high, 
+                      shape = term,
+                      fill = significant),
+                  lwd = 0.5, 
+                  position = position_dodge(width = 0.5)) + 
+  geom_hline(yintercept = 0, lty = 2, lwd = 0.4, color = "black", alpha = 0.5) + 
+  labs(y = "Coefficient estimates and 95% CI",
+       x = "",
+       shape = "Term",
+       fill = expression(italic(P) < 0.05)) +
+  coord_flip() +
+  facet_grid(~facet) + 
+  scale_shape_manual(values = shapes, labels = labels) + 
+  scale_fill_manual(values = c("no" = "transparent", "yes" = "black")) +
+  ggtitle("LINEAR MIXED EFFECTS MODELS") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"), 
+    axis.title.y = element_text(size = 12), 
+    axis.title.x = element_text(size = 12), 
+    axis.text.y = element_text(size = 12, color = "black"), 
+    strip.text.x = element_text(size = 12, color = "transparent"), 
+    strip.text.y = element_text(size = 12, color = "transparent"), 
+    legend.position = "right", 
+    legend.title = element_text(size = 10), 
+    legend.text = element_text(size = 10), 
+    legend.key.size = unit(0.75, 'cm'), 
+    legend.spacing = unit(0.2, "cm"), # decrease space between legends
+    plot.title = element_text(hjust = 0.5, size = 15, face = "bold"),
+    strip.background = element_blank(), 
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.spacing = unit(1, "lines"), 
+    panel.background = element_rect(fill = 'transparent'), # transparent panel bg
+    plot.background = element_rect(fill = 'transparent', color = NA), # transparent plot bg
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+    legend.background = element_rect(fill = 'transparent', color = NA), # transparent legend bg
+    legend.box.background = element_rect(fill = 'transparent', color = NA), # transparent legend panel
+    legend.key = element_rect(fill = 'transparent', color = NA) # transparent legend keys with no border
+  ) +
+  guides(fill = guide_legend(override.aes = list(shape = 21)))
+
+LMM_leptin_ghrelin_IL6
+
+# save plot
+# ggsave(
+#   filename = "24.10.10_LMM_leptin_ghrelin_IL6.png",
+#   plot = LMM_leptin_ghrelin_IL6,
+#   device = "png",
+#   path = "figures_2024",
+#   units = "cm",
+#   width = 15,
+#   height = 10,
+#   dpi = 300,
+#   bg = "transparent"
+# )
+```
+# Prepare figures for manuscript
+```{r Figure 3AB}
+MS1_Fig3AB <- ggpubr::ggarrange(
+  baseline_leptin_sign, 
+  NULL,
+  LMM_leptin_ghrelin_IL6,
+  nrow = 1, 
+  widths = c(0.7, 0.1, 1),
+  labels = c("A", "", "B"), 
+  align="h"
+  )
+MS1_Fig3AB
+
+### save plot
+ggsave(filename = "25.02.15_MS1_Fig3AB.jpeg", plot = MS1_Fig3AB, device = "jpeg", path = "figures", units = "cm", width = 25, height = 10, dpi = 300, bg = "transparent")
+```
+
+```{r Figure 3CDE}
+MS1_MSD_endpoint <- ggarrange(
+  endpoint_leptin_text, 
+  endpoint_MCP1_text, 
+  endpoint_IL6_text, 
+  nrow=1, 
+  labels = c("C","D", "E"),
+  common.legend = TRUE, 
+  legend = "bottom")
+MS1_MSD_endpoint
+
+# Add extra space under the legend
+MS1_MSD_endpoint <- annotate_figure(
+  MS1_MSD_endpoint,
+  bottom = text_grob(" ", vjust = 1.5)  # Adjust vjust to add space
+)
+#ggsave("24.12.09_MS1_Fig3C.jpeg", plot = MS1_MSD_endpoint, device = "jpeg", path = ("figures"), units="cm", width=25, height=15, dpi=300)
+```

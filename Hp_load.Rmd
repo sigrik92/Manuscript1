@@ -1,0 +1,349 @@
+---
+title: "Hp_load"
+author: "Sigri"
+date: "2024-05-21"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(scales)
+library(ggbeeswarm)
+library(EnvStats)
+library(cowplot)
+library(rstatix)
+```
+
+
+```{r}
+MS1_Hp_loads <- read_xlsx("MS1_Hp_loads.xlsx") 
+```
+
+```{r}
+MS1_Hp_loads <- MS1_Hp_loads %>% 
+  mutate(Hp_copies_std = avg_copies/total_DNA_conc) %>% 
+  mutate(Hp_copies_std_log10 = log10(Hp_copies_std))
+```
+
+
+```{r LT: plot qPCR results}
+LT_qPCR <- MS1_Hp_loads %>% 
+  filter(experiment=="LT") %>%
+  filter(treatment=="Hp") %>%
+  filter(!is.na(avg_copies)) %>%
+  ggplot(aes(x = sex, y = avg_copies*200, color=treatment)) + # multiply by 200 to get the whole stomach (first up to 100 uL extraction volume, and then x4 for all four pieces of the stomach)
+  geom_boxplot(aes(fill=treatment), alpha=0.1, outlier.shape = NA, lwd = 0.75) +
+  geom_jitter(aes(color = treatment), height = 0, width = .2, size=2) +
+  scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_y_continuous(trans = log10_trans(),
+                     breaks = trans_breaks("log10", function(x) 10^x),
+                     labels = trans_format("log10", math_format(10^.x)),
+                     limits = c(1e5, 1e9)
+                     ) + 
+  facet_wrap(~diet, scales = "free_x", 
+             labeller = labeller(diet = c("CD" = "Control diet", 
+                                             "HFD" = "High fat diet"))) + 
+  stat_n_text(aes(y = 1e5), alpha = 0.75, size=4) + 
+  labs(y=expression(paste(italic("H. pylori glmM"), " copies/stomach"))) + 
+  #ggtitle("LONG-TERM") +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 10),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(size = 10), 
+    strip.text.x = element_text(size = 12), 
+    strip.text.y = element_text(size = 12), 
+    plot.title = element_text(hjust = 0.5, face= "bold", size = 14),
+    panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+    legend.position = "none", 
+    legend.title = element_blank(), 
+    legend.text = element_text(size = 14), 
+    legend.key.size = unit(1, 'cm'), 
+    strip.background = element_blank(), 
+    panel.grid = element_blank())
+LT_qPCR
+
+# save plot 
+#ggsave("24.11.29_MS1_qPCR_LT.png", plot = LT_qPCR, device = "png", path = ("supplementary"), units="cm", width = 7.5, height=7.5, dpi=300)
+```
+```{r LT: plot standardized qPCR results}
+LT_qPCR_std <- MS1_Hp_loads %>% 
+  filter(experiment=="LT") %>%
+  filter(treatment=="Hp") %>%
+  filter(!is.na(Hp_copies_std)) %>%
+  ggplot(aes(x = sex, y = Hp_copies_std, color=treatment)) + 
+  geom_boxplot(aes(fill=treatment), alpha=0.1, outlier.shape = NA, lwd = 0.75) +
+  geom_jitter(aes(color = treatment), height = 0, width = .2, size=2) +
+  scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_y_continuous(trans = log10_trans(),
+                     breaks = trans_breaks("log10", function(x) 10^x),
+                     labels = trans_format("log10", math_format(10^.x)),
+                     limits = c(1e0, 1e6)
+                     ) +
+  facet_wrap(~diet, scales = "free_x", 
+             labeller = labeller(diet = c("CD" = "Control diet", 
+                                             "HFD" = "High fat diet"))) + 
+  stat_n_text(aes(y = 1e0), alpha = 0.75, size=4) + 
+  labs(y=expression(paste(italic("H. pylori glmM"), " copies/ng total DNA"))) + 
+  #ggtitle("LONG-TERM") +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 10),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(size = 10), 
+    strip.text.x = element_text(size = 12), 
+    strip.text.y = element_text(size = 12), 
+    plot.title = element_text(hjust = 0.5, face= "bold", size = 14),
+    panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+    legend.position = "none", 
+    legend.title = element_blank(), 
+    legend.text = element_text(size = 14), 
+    legend.key.size = unit(1, 'cm'), 
+    strip.background = element_blank(), 
+    panel.grid = element_blank())
+LT_qPCR_std
+
+# save plot 
+ggsave("24.12.09_MS1_qPCR_std_LT.jpeg", plot = LT_qPCR_std, device = "jpeg", path = ("supplementary"), units="cm", width = 7.5, height=7.5, dpi=300)
+```
+
+```{r ST: plot qPCR results}
+ST_qPCR <- MS1_Hp_loads %>% 
+  filter(experiment=="ST") %>%
+  filter(treatment=="Hp") %>%
+  ggplot(aes(x = sex, y = avg_copies*200, color=treatment)) + 
+  geom_boxplot(aes(fill=treatment), alpha=0.1, outlier.shape = NA, lwd = 0.75) +
+  geom_jitter(aes(color = treatment), height = 0, width = .2, size=2) +
+  scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_y_continuous(trans = log10_trans(),
+                     breaks = trans_breaks("log10", function(x) 10^x),
+                     labels = trans_format("log10", math_format(10^.x)),
+                     limits = c(1e5, 1e9)
+                     ) + 
+  facet_wrap(~diet, scales = "free_x", 
+             labeller = labeller(diet = c("CD" = "Control diet", 
+                                             "HFD" = "High fat diet"))) + 
+  stat_n_text(aes(y = 1e5), alpha = 0.75, size=4) + 
+  labs(y=expression(paste(italic("H. pylori glmM"), " copies/stomach"))) + 
+  #ggtitle("SHORT-TERM") +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 10),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(size = 10), 
+    strip.text.x = element_text(size = 12), 
+    strip.text.y = element_text(size = 12), 
+    plot.title = element_text(hjust = 0.5, face= "bold", size = 14),
+    panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+    legend.position = "none", 
+    legend.title = element_blank(), 
+    legend.text = element_text(size = 14), 
+    legend.key.size = unit(1, 'cm'), 
+    strip.background = element_blank(), 
+    panel.grid = element_blank())
+ST_qPCR
+
+# save plot 
+#ggsave("24.11.29_MS1_qPCR_ST.png", plot = ST_qPCR, device = "png", path = ("supplementary"), units="cm", width = 7.5, height=10, dpi=300)
+```
+
+```{r ST: plot standardized qPCR results}
+ST_qPCR_std <- MS1_Hp_loads %>% 
+  filter(experiment=="ST") %>%
+  filter(treatment=="Hp") %>%
+  ggplot(aes(x = sex, y = Hp_copies_std, color=treatment)) + 
+  geom_boxplot(aes(fill=treatment), alpha=0.1, outlier.shape = NA, lwd = 0.75) +
+  geom_jitter(aes(color = treatment), height = 0, width = .2, size=2) +
+  scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_y_continuous(trans = log10_trans(),
+                     breaks = trans_breaks("log10", function(x) 10^x),
+                     labels = trans_format("log10", math_format(10^.x)),
+                     limits = c(1e0, 1e6)
+                     ) +
+  facet_wrap(~diet, scales = "free_x", 
+             labeller = labeller(diet = c("CD" = "Control diet", 
+                                             "HFD" = "High fat diet"))) + 
+  stat_n_text(aes(y = 1e0), alpha = 0.75, size=4) + 
+  labs(y=expression(paste(italic("H. pylori glmM"), " copies/ng total DNA"))) + 
+  #ggtitle("SHORT-TERM") +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 10),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_blank(),
+    axis.text.y = element_text(size = 10), 
+    strip.text.x = element_text(size = 12), 
+    strip.text.y = element_text(size = 12), 
+    plot.title = element_text(hjust = 0.5, face= "bold", size = 14),
+    panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+    legend.position = "none", 
+    legend.title = element_blank(), 
+    legend.text = element_text(size = 14), 
+    legend.key.size = unit(1, 'cm'), 
+    strip.background = element_blank(), 
+    panel.grid = element_blank())
+ST_qPCR_std
+
+# save plot 
+ggsave("24.12.09_MS1_qPCR_std_ST.jpeg", plot = ST_qPCR_std, device = "jpeg", path = ("supplementary"), units="cm", width = 7.5, height=10, dpi=300)
+```
+
+
+```{r plot qPCR results}
+qPCR_all <- ggpubr::ggarrange(LT_qPCR, ST_qPCR,
+                            labels = c("A", "B"),
+                            ncol = 2, 
+                            nrow = 1, 
+                            widths = c(0.6,1),
+                            common.legend = FALSE)
+qPCR_all
+
+# save plot 
+#ggsave("24.11.04_MS1_FigS1.png", plot = qPCR_all, device = "png", path = ("supplementary"), units="cm", width=15, height=10, dpi=300)
+```
+```{r plot standardized qPCR results}
+qPCR_std_all <- ggpubr::ggarrange(LT_qPCR_std, ST_qPCR_std,
+                            labels = c("A", "B"),
+                            ncol = 2, 
+                            nrow = 1, 
+                            widths = c(0.6,1),
+                            common.legend = FALSE)
+qPCR_std_all
+# save plot 
+#ggsave("24.11.04_MS1_FigS1.png", plot = qPCR_all, device = "png", path = ("supplementary"), units="cm", width=15, height=10, dpi=300)
+```
+
+
+```{r run stats}
+# LT: Check normality of data
+MS1_Hp_loads %>%
+  filter(experiment=="LT") %>% 
+  filter(treatment=="Hp") %>%
+  shapiro_test(avg_copies) %>% 
+  add_significance() # significant, not normally distributed
+
+# LT: Test if there are significant differences in copy numbers among sexes 
+MS1_Hp_loads %>%
+  filter(experiment=="LT") %>% 
+  filter(treatment=="Hp") %>%
+  wilcox_test(avg_copies ~ sex) # ns
+
+MS1_Hp_loads %>%
+  filter(experiment=="LT") %>% 
+  filter(treatment=="Hp") %>%
+  wilcox_test(Hp_copies_std ~ sex) # ns 
+
+# ST: Check normality of data
+MS1_Hp_loads %>%
+  filter(experiment=="ST") %>% 
+  filter(treatment=="Hp") %>%
+  shapiro_test(avg_copies) %>% 
+  add_significance() # significant, not normally distributed 
+
+# ST: Test if there are significant differences in copy numbers among sexes on each diet
+MS1_Hp_loads %>%
+  filter(experiment=="ST") %>% 
+  filter(treatment=="Hp") %>%
+  group_by(diet) %>%
+  wilcox_test(avg_copies ~ sex) # ns
+
+MS1_Hp_loads %>%
+  filter(experiment=="ST") %>% 
+  filter(treatment=="Hp") %>%
+  group_by(diet) %>%
+  wilcox_test(Hp_copies_std ~ sex) # ns 
+
+# ST: Test if there are significant differences in copy numbers among sexes (regardless of diet)
+MS1_Hp_loads %>%
+  filter(experiment=="ST") %>% 
+  filter(treatment=="Hp") %>%
+  wilcox_test(avg_copies ~ sex) # ns
+
+MS1_Hp_loads %>%
+  filter(experiment=="ST") %>% 
+  filter(treatment=="Hp") %>%
+  wilcox_test(Hp_copies_std ~ sex) # ns 
+
+# ST: Test if there are significant differences in copy numbers among diets (regardless of sex)
+MS1_Hp_loads %>%
+  filter(experiment=="ST") %>% 
+  filter(treatment=="Hp") %>%
+  wilcox_test(avg_copies ~ diet) # p = 0.0456
+
+MS1_Hp_loads %>%
+  filter(experiment=="ST") %>% 
+  filter(treatment=="Hp") %>%
+  wilcox_test(Hp_copies_std ~ diet) # p = 0.0622
+
+# Test if there are significant differences in copy numbers between experiments
+MS1_Hp_loads %>%
+  filter(treatment=="Hp") %>%
+  wilcox_test(avg_copies ~ experiment) # ns
+
+MS1_Hp_loads %>%
+  filter(treatment=="Hp") %>%
+  wilcox_test(Hp_copies_std ~ experiment) # ns 
+```
+```{r}
+plot_correlation_Hp_copies_qubit_ST <- 
+  MS1_Hp_loads %>%
+  filter(experiment == "ST") %>%
+  filter(treatment == "Hp") %>%
+  ggplot(aes(x = log10(avg_copies), y = qubit_ng_uL, colour = treatment)) +
+  geom_point(aes(color = treatment), size = 3) +
+  facet_nested(~sex + diet, nest_line = element_line(linetype = 1),
+               labeller = labeller(diet = c("CTRL" = "control diet", "HF" = "high fat diet"))) + 
+  #stat_poly_line(se = TRUE, show.legend = FALSE) +
+  geom_smooth(method = "lm", aes(fill = treatment), alpha = 0.2, show.legend = FALSE) +  # Use geom_smooth for SE shading
+  #scale_y_continuous(limits=c(-0.55, 1.05), breaks=c(-0.5, 0.0, 0.5, 1.0)) +
+  #scale_x_continuous(limits=c(-0.05, 1.05), breaks=c(0.00, 0.25, 0.50, 0.75, 1.00)) +
+  #labs(x = "Gatric rel. abundance of Helicobacteraceae", y = "Fecal rel. abundance of Akkermansiaceae") +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+    panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(override.aes = list(size = 5))) # increase legend symbol size
+
+plot_correlation_Hp_copies_qubit_ST
+
+# Calculate correlation and significance
+cor_results_ST <-   MS1_Hp_loads %>%
+  filter(experiment == "ST") %>%
+  filter(treatment == "Hp") %>%
+  group_by(sex, diet) %>%
+  mutate(avg_copies_log10 = log10(avg_copies)) %>%
+  cor_test(avg_copies_log10, qubit_ng_uL, method = "pearson")
+cor_results_ST
+
+MS1_Hp_loads %>%
+  filter(experiment == "ST") %>%
+  filter(treatment == "Hp")
+```
+

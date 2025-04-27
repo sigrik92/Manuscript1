@@ -1,0 +1,555 @@
+---
+title: "Weight"
+author: "Sigri"
+date: "2024-10-22"
+output: html_document
+---
+
+# Load libraries
+```{r load libraries}
+library(tidyr)
+library(stringr)
+library(tidyverse)
+library(readxl)
+library(ggpubr)
+library(ggbeeswarm)
+library(effects)
+library(rstatix)
+library(EnvStats)
+library(multcompView)
+library(ggstatsplot)
+library(redres)
+library(sjPlot)
+library(writexl)
+library(ggh4x)
+```
+
+# Import data
+```{r import data}
+weights <- read_xlsx("MS1_weights.xlsx") %>%
+  mutate(sex = factor(sex, levels = c("female", "male"))) %>%
+  filter(!mouseID %in% (filter(., notes == "dead") %>% pull(mouseID))) %>% # remove mice that died during experiment
+  filter(age_weeks != 4) %>% # remove weights before date of diet change 
+  mutate(treatment_diet = paste(treatment, diet, sep = "_")) %>%
+  group_by(mouseID) %>%
+  mutate(initial_bodyweight = ifelse(experiment == "ST", body_weight[age_weeks == 6], body_weight[age_weeks == 5]),
+         rel_bodyweight_gain = ((body_weight - initial_bodyweight) / initial_bodyweight) * 100) %>%
+  ungroup() %>%
+  select(-initial_bodyweight)  # remove the temporary initial_bodyweight column
+```
+
+```{r add Hp loads}
+# Load Hp loads data
+MS1_Hp_loads <- read_xlsx("MS1_Hp_loads.xlsx") %>%
+  select(mouseID, Hp_copies_std) 
+
+# Add Hp loads to dataframe
+weights <- weights %>% 
+  inner_join(MS1_Hp_loads, by = "mouseID")
+
+weights <- weights %>% mutate(Hp_load = ifelse(Hp_copies_std > 1000, "high", "low"))
+
+# count how many are categorized as "high" or "low" Hp load
+weights %>% filter(experiment == "LT", age_weeks == "5", treatment == "Hp") %>%
+  filter(!is.na(Hp_load)) %>%
+  group_by(sex, Hp_load) %>% 
+  count()
+
+# count how many are categorized as "high" or "low" Hp load
+weights %>% filter(experiment == "ST", age_weeks == "6", treatment == "Hp") %>%
+  filter(!is.na(Hp_load)) %>%
+  group_by(sex, diet, Hp_load) %>% 
+  count()
+
+# # Remove mice with low levels of Hp 
+# weights <- weights %>% 
+#   mutate(Hp_load = ifelse(is.na(Hp_load) & treatment == "Ctrl", "Ctrl", Hp_load)) %>%
+#   # Remove Hp mice with low bacterial load
+#   filter(Hp_load != "low") 
+```
+
+# Bodyweight
+## Short-term experiment
+### Plot data
+
+
+```{r ST: plot bodyweight trajectories}
+# Filter and summarize data for ST experiment
+mean_bodyweight_ST <- weights %>%
+  filter(experiment == "ST") %>%
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(mean_bodyweight = mean(body_weight), SD_bodyweight = sd(body_weight), .groups = 'drop')
+
+# Plot bodyweight trajectories
+ST_bodyweight_trajectories <- ggplot() +
+  geom_line(data = filter(weights, experiment == "ST"), aes(x = weeks_on_diet, y = body_weight, color = treatment_diet, group = mouseID), alpha = 0.3, size = 0.5) +
+  geom_line(data = mean_bodyweight_ST, aes(x = weeks_on_diet, y = mean_bodyweight, color = treatment_diet, linetype=treatment_diet), size = 1) +
+  xlab("Time (weeks)") +
+  ylab("Body weight (g)") +
+  facet_wrap(~sex, scales = "free_x") +
+ scale_color_manual(
+    labels = c(
+      expression("Control + CD"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + CD"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_CD" = "#0072B2",
+      "Ctrl_HFD" = "#0072B2",
+      "Hp_CD" = "#E69F00",
+      "Hp_HFD" = "#E69F00")) +
+  scale_linetype_manual(
+    labels = c(
+      expression("Control + CD"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + CD"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_CD" = "dotted",
+      "Ctrl_HFD" = "solid",
+      "Hp_CD" = "dotted",
+      "Hp_HFD" = "solid")) + 
+  scale_x_continuous(expand = c(0, 0)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        strip.text.x = element_text(size = 12),
+        strip.text.y = element_text(size = 12),
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 10), 
+        legend.key.height = unit(0.5, 'cm'),
+        legend.key.width = unit(1, 'cm'),
+        legend.key = element_rect(size = 0.75), 
+        legend.background = element_rect(color = "black", size = 0.5),
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")
+        ) + 
+    guides(color = guide_legend(nrow = 2, byrow = TRUE)) 
+
+# Display the plot
+ST_bodyweight_trajectories
+```
+
+```{r ST: plot relative bodyweight gain trajectories}
+# Filter and summarize data for ST experiment
+mean_rel_bodyweight_ST <- weights %>%
+  filter(experiment == "ST") %>%
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(mean_rel_bodyweight_gain = mean(rel_bodyweight_gain), SD_rel_bodyweight = sd(rel_bodyweight_gain), .groups = 'drop')
+
+# Plot bodyweight trajectories
+ST_rel_bodyweight_gain_trajectories <- ggplot() +
+  geom_line(data = filter(weights, experiment == "ST"), aes(x = weeks_on_diet, y = rel_bodyweight_gain, color = treatment_diet, group = mouseID), alpha = 0.3, size = 0.5) +
+  geom_line(data = mean_rel_bodyweight_ST, aes(x = weeks_on_diet, y = mean_rel_bodyweight_gain, color = treatment_diet, linetype = treatment_diet), size = 1) +
+  xlab("Time (weeks)") +
+  ylab("Relative body weight gain (%)") +
+  facet_wrap(~sex, scales = "free_x") +
+ scale_color_manual(
+    labels = c(
+      expression("Control + CD"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + CD"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_CD" = "#0072B2",
+      "Ctrl_HFD" = "#0072B2",
+      "Hp_CD" = "#E69F00",
+      "Hp_HFD" = "#E69F00")) +
+  scale_linetype_manual(
+    labels = c(
+      expression("Control + CD"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + CD"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_CD" = "dotted",
+      "Ctrl_HFD" = "solid",
+      "Hp_CD" = "dotted",
+      "Hp_HFD" = "solid")) + 
+  scale_x_continuous(expand = c(0, 0)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        strip.text.x = element_text(size = 12),
+        strip.text.y = element_text(size = 12),
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 10), 
+        legend.key.height = unit(0.5, 'cm'),
+        legend.key.width = unit(1, 'cm'),
+        legend.key = element_rect(size = 0.75), 
+        legend.background = element_rect(color = "black", size = 0.5),
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")
+        ) + 
+    guides(color = guide_legend(nrow = 2, byrow = TRUE)) 
+
+# Display the plot
+ST_rel_bodyweight_gain_trajectories
+```
+### Linear mixed effects model 
+```{r LMMs}
+weights_ST <- weights %>% filter(experiment == "ST")
+
+model_bodyweight_ST <- lmerTest::lmer(body_weight ~ treatment * diet * sex * weeks_on_diet + (1 | mouseID), data = weights_ST)
+print(summary(model_bodyweight_ST))
+```
+
+```{r plot LMM diagnostics}
+# For model_bodyweight_ST
+plot1 <- plot_redres(model_bodyweight_ST, type = "std_cond")
+plot2 <- plot_resqq(model_bodyweight_ST)
+plot3 <- plot_ranef(model_bodyweight_ST)
+
+# Combine the plots
+combined_plot_bodyweight_ST <- ggarrange(plot1, plot2, plot3, ncol = 1, nrow = 3)
+
+# Display the combined plots
+combined_plot_bodyweight_ST
+```
+
+```{r generate LMM summary table of chosen model}
+# Generate a summary table and confidence intervals
+tab_model(model_bodyweight_ST)
+```
+
+## Long-term bodyweights
+### Plot data
+```{r LT: plot bodyweight trajectories}
+# Filter and summarize data for LT experiment
+mean_bodyweight_LT <- weights %>%
+  filter(experiment == "LT") %>%
+  group_by(weeks_on_diet, sex, treatment) %>%
+  summarize(mean_bodyweight = mean(body_weight), SD_bodyweight = sd(body_weight), .groups = 'drop')
+
+# Plot relative body weight trajectories
+LT_bodyweight_trajectories <- ggplot() +
+  geom_line(data = filter(weights, experiment == "LT"), aes(x = weeks_on_diet, y = body_weight, color = treatment, group = mouseID), alpha = 0.3, size = 0.5) +
+  geom_line(data = mean_bodyweight_LT, aes(x = weeks_on_diet, y = mean_bodyweight, color = treatment), size = 1) +
+  xlab("Time (weeks)") +
+  ylab("Body weight (g)") +
+  facet_wrap(~sex, scales = "free_x") +
+  scale_colour_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                      labels = c(expression("Control + HFD"), expression(italic("H. pylori") * " + HFD"))) +
+  scale_x_continuous(expand = c(0, 0)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        strip.text.x = element_text(size = 12),
+        strip.text.y = element_text(size = 12),
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 10), 
+        legend.key.height = unit(0.5, 'cm'),
+        legend.key.width = unit(1, 'cm'),
+        legend.key = element_rect(size = 0.75), 
+        legend.background = element_rect(color = "black", size = 0.5),
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")
+        ) + 
+    guides(color = guide_legend(nrow = 2, byrow = TRUE)) 
+
+# Display the plot
+LT_bodyweight_trajectories
+```
+
+```{r LT: plot relative body weight gain trajectories}
+# Filter and summarize data for LT experiment
+mean_rel_bodyweight_gain_LT <- weights %>%
+  filter(experiment == "LT") %>%
+  group_by(weeks_on_diet, sex, treatment) %>%
+  summarize(mean_rel_bodyweight_gain = mean(rel_bodyweight_gain), SD_rel_bodyweight_gain = sd(rel_bodyweight_gain), .groups = 'drop')
+
+# Plot relative body weight trajectories
+LT_rel_bodyweight_gain_trajectories <- ggplot() +
+  geom_line(data = filter(weights, experiment == "LT"), aes(x = weeks_on_diet, y = rel_bodyweight_gain, color = treatment, group = mouseID), alpha = 0.3, size = 0.5) +
+  geom_line(data = mean_rel_bodyweight_gain_LT, aes(x = weeks_on_diet, y = mean_rel_bodyweight_gain, color = treatment), size = 1) +
+  xlab("Time (weeks)") +
+  ylab("Relative body weight gain (%)") +
+  facet_wrap(~sex, scales = "free_x") +
+  scale_colour_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                      labels = c(expression("Control + HFD"), expression(italic("H. pylori") * " + HFD"))) +
+  scale_x_continuous(expand = c(0, 0)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(size = 10),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        axis.text.y = element_text(size = 10),
+        strip.text.x = element_text(size = 12),
+        strip.text.y = element_text(size = 12),
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 10), 
+        legend.key.height = unit(0.5, 'cm'),
+        legend.key.width = unit(1, 'cm'),
+        legend.key = element_rect(size = 0.75), 
+        legend.background = element_rect(color = "black", size = 0.5),
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")
+        ) + 
+    guides(color = guide_legend(nrow = 2, byrow = TRUE)) 
+
+# Display the plot
+LT_rel_bodyweight_gain_trajectories
+```
+### Linear mixed effects model
+```{r LMMs}
+weights_LT <- weights %>% filter(experiment == "LT")
+
+model_bodyweight_LT <- lmerTest::lmer(body_weight ~ treatment * sex * weeks_on_diet + (1 | mouseID), data = weights_LT)
+print(summary(model_bodyweight_LT))
+```
+
+```{r plot LMMs diagnostics}
+# For model_bodyweight_LT
+plot1 <- plot_redres(model_bodyweight_LT, type = "std_cond")
+plot2 <- plot_resqq(model_bodyweight_LT)
+plot3 <- plot_ranef(model_bodyweight_LT)
+
+# Combine the plots
+combined_plot_bodyweight_LT <- ggarrange(plot1, plot2, plot3, ncol = 1, nrow = 3)
+
+# Display the combined plots
+combined_plot_bodyweight_LT
+```
+
+```{r generate summary table of chosen model}
+# Generate a summary table and confidence intervals
+tab_model(model_bodyweight_LT)
+```
+
+# White adipose tissue (WAT) weights 
+## Short-term experiment
+```{r prepare dataframe}
+filtered_weights_ST <- weights %>%
+  filter(experiment == "ST", weeks_on_diet == 3) %>%
+  mutate(new_wat_weight = ifelse(sex == "female" & mouseID != "EO5.1_FR", wat_weight / 2, wat_weight)) # only one WAT depot was collected from EO5.1_FR
+```
+
+```{r plot data}
+ST_wat <- filtered_weights_ST %>%
+  filter(!is.na(new_wat_weight)) %>% 
+  ggplot(aes(x = treatment, y = new_wat_weight, color = treatment)) +
+  geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(height = 0, width = 0.2, size = 3) +
+  theme_pubr(border = TRUE) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"),
+                    labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  labs(y = "Perigonadal WAT weight (g)") +
+  scale_x_discrete(labels = c("Control", "H. pylori")) +
+  scale_y_continuous(limits = c(0,0.4), breaks = c(0, 0.1, 0.2, 0.3, 0.4)) + 
+  facet_nested(~sex + diet, nest_line = element_line(linetype = 1),
+               labeller = labeller(diet = c("CTRL" = "control diet", "HF" = "high fat diet"))) + 
+  stat_n_text(alpha = 0.75, y.pos = 0) + 
+  theme_bw() + 
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 10), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        strip.background = element_blank(), 
+        ggh4x.facet.nestline = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) # increase legend symbol size
+ST_wat
+```
+
+```{r statistical test}
+levene_wat <- filtered_weights_ST %>%
+  group_by(sex) %>%
+  levene_test(new_wat_weight ~ treatment * diet)
+print(levene_wat)
+
+aov_wat <- function(data) {
+  aov_model <- aov(new_wat_weight ~ treatment * diet, data = data)
+  summary(aov_model)
+  tukey <- TukeyHSD(aov_model, conf.level = 0.95)
+  tukey_letters <- multcompLetters4(aov_model, tukey)
+  list(aov_model = aov_model, tukey = tukey, tukey_letters = tukey_letters)
+}
+
+aov_wat_females <- aov_wat(filtered_weights_ST %>% filter(sex == "female"))
+aov_wat_males <- aov_wat(filtered_weights_ST %>% filter(sex == "male"))
+
+print(aov_wat_females$tukey_letters)
+print(aov_wat_males$tukey_letters)
+
+# Normality tests
+shapiro.test(residuals(aov_wat_females$aov_model)) # ns
+shapiro.test(residuals(aov_wat_males$aov_model)) # ns
+
+# Extract and combine compact letter display
+cld_females <- as.data.frame.list(aov_wat_females$tukey_letters$`treatment:diet`) %>%
+  select(Letters) %>%
+  mutate(sex = "female") %>%
+  rownames_to_column(var = "variable") %>%
+  separate(variable, into = c("treatment", "diet"), sep = ":")
+
+cld_males <- as.data.frame.list(aov_wat_males$tukey_letters$`treatment:diet`) %>%
+  select(Letters) %>%
+  mutate(sex = "male") %>%
+  rownames_to_column(var = "variable") %>%
+  separate(variable, into = c("treatment", "diet"), sep = ":")
+
+cld <- bind_rows(cld_females, cld_males) %>%
+  mutate(Letters = ifelse(sex == "female", NA, Letters)) %>%
+  mutate(Letters = ifelse(Letters == "a", "b", "a")) # change order
+
+# Add text annotations
+ST_wat_text <- ST_wat +
+  geom_text(data = cld, aes(x = treatment, y = 0.39, label = Letters, color = "black"), size = 5, hjust = 0.5, show.legend = FALSE)
+ST_wat_text
+```
+
+## Long-term experiment
+```{r prepare data}
+filtered_wat_weights_LT <- weights %>%
+  filter(experiment == "LT", weeks_on_diet %in% c(20, 21))
+```
+
+
+```{r plot data}
+LT_wat <- filtered_wat_weights_LT %>%
+  ggplot(aes(x = treatment, y = wat_weight, color = treatment)) +
+  geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(height = 0, width = 0.2, size = 3) +
+  theme_pubr(border = TRUE) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"),
+                    labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  labs(y = "Perigonadal WAT weight (g)") +
+  scale_x_discrete(labels = c("Control", "H. pylori")) +
+  facet_nested(~ diet + sex, nest_line = element_line(linetype = 1),
+               labeller = labeller(diet = c("CTRL" = "control diet", "HF" = "high fat diet"))) + 
+  stat_n_text(alpha = 0.75) + 
+  theme_bw() + 
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 10), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        strip.background = element_blank(), 
+        ggh4x.facet.nestline = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines"))
+LT_wat
+```
+```{r statistical tests}
+# Normality tests
+filtered_wat_weights_LT %>%
+  shapiro_test(wat_weight) # significant
+
+LT_wat_wilcox <- filtered_wat_weights_LT %>%
+  group_by(sex) %>%
+  wilcox_test(wat_weight ~ treatment, data=.)
+LT_wat_wilcox # not significant
+```
+
+# Make final figure for MS1
+```{r combined weights plot}
+# Arrange the relative bodyweight gain plots
+MS1_bodyweight <- ggpubr::ggarrange(
+  ST_bodyweight_trajectories, LT_bodyweight_trajectories, 
+  nrow = 1, ncol = 2,
+  common.legend = TRUE, legend = "bottom",
+  widths = c(0.75, 1),
+  labels = c("A", "B"),
+  align = "h")
+
+# save plot 
+#ggsave("25.03.31_MS1_bodyweight.jpeg", plot = MS1_bodyweight, device = "jpeg", path = ("figures"), units="cm", width=25, height=10, dpi=300)
+
+# Add space at the bottom
+MS1_bodyweight <- annotate_figure(
+  MS1_bodyweight,
+  bottom = text_grob(" ", vjust = 1))
+
+# Arrange the WAT weight plot
+MS1_wat_weight <- ggpubr::ggarrange(
+  NULL, ST_wat_text,
+  nrow = 1, ncol = 2,
+  widths = c(0.5, 1),
+  #labels = c("", "C"), remove labels to make new figure for manuscript
+  align = "h"
+)
+
+# save plot 
+#ggsave("25.04.15_MS1_WAT_weight.jpeg", plot = MS1_wat_weight, device = "jpeg", path = ("figures"), units="cm", width=25, height=10, dpi=300)
+
+# Combine all plots
+MS1_weights_combined <- ggpubr::ggarrange(
+  MS1_bodyweight, MS1_wat_weight,
+  nrow = 2, ncol = 1,
+  align = "v"
+)
+
+# Display the combined plot
+MS1_weights_combined
+
+# save plot 
+#ggsave("25.02.27_MS1_Fig2.jpeg", plot = MS1_weights_combined, device = "jpeg", path = ("figures"), units="cm", width=25, height=25, dpi=300)
+```
+
+# check WAT differences between ST and LT
+```{r increase in WAT weight}
+# Filter for animals on HFD
+wat_weights <- weights %>%
+  dplyr::filter(!is.na(wat_weight)) %>%
+  group_by(experiment, treatment, diet, sex) %>%
+  summarize(
+    avg_wat = mean(wat_weight, na.rm = TRUE),
+    sd_wat = sd(wat_weight, na.rm = TRUE))
+  
+
+# Calculate the increase in WAT weight
+increase_wat_weight <- wat_weights %>%
+  dplyr::filter(diet == "HFD") %>% 
+  group_by(treatment, sex) %>%
+  summarize(
+    increase_percentage = (avg_wat[experiment == "LT"] - avg_wat[experiment == "ST"]) / avg_wat[experiment == "ST"] * 100
+  )
+
+print(increase_wat_weight)
+```
+

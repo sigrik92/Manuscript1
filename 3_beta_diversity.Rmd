@@ -1,0 +1,1599 @@
+---
+title: "MS1_beta_diversity"
+author: "Sigri"
+date: "2024-06-05"
+output: html_document
+---
+
+# Load libraries 
+```{r libraries, message=FALSE, warning=FALSE, paged.print=FALSE, results="hide"}
+### Load required packages
+library(ggplot2)
+library(phyloseq)
+library(readxl)
+library(vegan)
+library(ggpubr)
+library(tidyverse)
+library(EnvStats)
+library(rstatix)
+library(ggbeeswarm)
+library(effects)
+library(modelsummary)
+library(speedyseq)
+library(MicEco)
+library(ggh4x)
+library(sjPlot)
+library(permute)
+library(MiRKATMC) 
+```
+
+# Load phyloseq objects
+```{r load phyloseq objects}
+physeq_LT <- readRDS("LT_physeq_scrub_0.98clustered.rds") %>%
+  subset_samples(!(animalID %in% c("EO4.2_MR", "EO4.2_ML", "EO4.6_ML", "EO4.2_MN", "EO4.7_MN", "EO4.11_FR", "EO4.5_FN"))) %>% # remove mice that died during experiment
+  rename_sample_data(mouseID = animalID) %>% 
+    mutate_sample_data(
+      weeks_on_diet = age_weeks - 5,
+      weeks_on_diet_factor = as.factor(weeks_on_diet),
+      treatment = ifelse(treatment == "Control", "Ctrl", treatment),
+      diet = str_replace(diet, "HF", "HFD"),
+      treatment_diet = paste(treatment, diet, sep = "_")
+    )
+
+physeq_ST <- readRDS("ST_physeq_scrub_0.98clustered.rds") %>%
+  rename_sample_data(mouseID = animal_ID) %>% 
+  mutate_sample_data(
+    weeks_on_diet = age_weeks - 6, 
+    weeks_on_diet_factor = as.factor(weeks_on_diet),
+    diet = str_replace(diet, "HF", "HFD"), 
+    diet = str_replace(diet, "CTRL", "CD"), 
+    diet_new = if_else(timepoint %in% c("t0", "t1"), "chow", diet),
+    diet_new = factor(diet_new, levels = c("chow", "CD", "HFD")), 
+    treatment_diet_new = paste(treatment, diet_new, sep = "_"),
+    treatment_diet_new = factor(treatment_diet_new, levels = c("Ctrl_chow", "Ctrl_CD", "Ctrl_HFD", "Hp_chow", "Hp_CD", "Hp_HFD")), 
+    sample_type = if_else(timepoint == "t4" & sample_type == "fecal", "colon", sample_type)
+  )
+
+```
+
+```{r add Hp loads to phyloseq objects}
+# Load Hp loads data
+MS1_Hp_loads <- read_xlsx("MS1_Hp_loads.xlsx") %>%
+  select(mouseID, experiment, total_bact_load, avg_copies, total_Hp_abund, total_DNA_conc, Hp_copies_std) 
+
+# subset Hp loads data by experiment
+MS1_Hp_loads_LT <- MS1_Hp_loads %>% 
+  filter(experiment == "LT") %>%
+  select(-experiment)
+MS1_Hp_loads_ST <- MS1_Hp_loads %>% 
+  filter(experiment == "ST") %>%
+  select(-experiment)
+
+# Add Hp loads to phyloseq objects
+physeq_LT <- physeq_LT %>% 
+  inner_join_sample_data(MS1_Hp_loads_LT, by = "mouseID") 
+physeq_ST <- physeq_ST %>% 
+  inner_join_sample_data(MS1_Hp_loads_ST, by = "mouseID") 
+
+#physeq_LT <- physeq_LT %>% mutate_sample_data(Hp_load = ifelse(Hp_copies_std > 1000, "high", "low"))
+#physeq_ST <- physeq_ST %>% mutate_sample_data(Hp_load = ifelse(Hp_copies_std > 1000, "high", "low"))
+```
+
+
+## prune and transform phyloseq objects 
+```{r prune-taxa}
+# For physeq_LT
+physeq_LT_trans_abund_subset <- physeq_LT %>%
+  ps_prune(min.samples = 3) %>%  # keeps only ASVs present in at least 3 samples
+  prune_taxa(taxa_sums(.) > 0, .) %>%  # Removes taxa with zero abundance across all samples
+  transform_sample_counts(function(x) x / sum(x)) %>%  # Transforms the counts to relative abundances by dividing each count by the total counts in that sample
+  filter_taxa(function(x) mean(x) > 0.001, TRUE) %>%  # Filters out taxa with a mean relative abundance of 0.1% or less
+  subset_taxa(Kingdom != "unassigned" & Family != "Mitochondria") %>%  # Removes taxa that are unassigned at the Kingdom level or belong to the Mitochondria family
+  prune_samples(sample_sums(.) > 0, .)  # remove empty samples
+
+# For physeq_ST
+physeq_ST_trans_abund_subset <- physeq_ST %>%
+  ps_prune(min.samples = 3) %>%  
+  prune_taxa(taxa_sums(.) > 0, .) %>%  
+  transform_sample_counts(function(x) x / sum(x)) %>%   
+  filter_taxa(function(x) mean(x) > 0.001, TRUE) %>%  
+  subset_taxa(Kingdom != "unassigned" & Family != "Mitochondria") %>%
+  prune_samples(sample_sums(.) > 0, .) 
+
+# Save pruned phyloseq objects
+#saveRDS(physeq_LT_trans_abund_subset, "LT_physeq_trans_pruned_0.001.rds")
+#saveRDS(physeq_ST_trans_abund_subset, "ST_physeq_trans_pruned_0.001.rds")
+
+```
+
+```{r}
+# physeq_mums <- subset_samples(physeq_LT_trans_abund_subset, is.na(treatment))
+# physeq_mums_akker <- subset_taxa(physeq_mums, Family == "Akkermansiaceae")
+# 
+# # check 
+# physeq_mums_akker %>% psmelt () %>%
+#   filter(Abundance > 0) %>%
+#   group_by(litter, treatment) %>%
+#   summarize(total_abundance = sum(Abundance)) %>%
+#   mutate(percentage = total_abundance*100)
+# 
+# physeq_mums_top10_families <- top_taxa(
+#   physeq_mums,
+#   tax_level = "Family",
+#   n_taxa = 10,
+#   by_proportion = FALSE)
+# 
+# test <- physeq_mums_top10_families$ps_obj
+# 
+# plot_physeq_mums_top10_families <- plot_nested_bar(
+#   ps_obj = physeq_mums_top10_families$ps_obj,
+#   top_level = "Phylum",
+#   nested_level = "Family") + 
+#   # palette = c(Bacillota = "#00F034",
+#   #             Bacteroidota = "#008CF0",
+#   #             Desulfobacterota = "#ECF000",
+#   #             Verrucomicrobiota = "#CA0BE8")) +
+#   labs(x = "Dam ID", y = "Relative abundance") + 
+#   theme(text = element_text(size = 16),
+#         #axis.title.x = element_text(size = 14),
+#         #axis.title.y = element_text(size = 14),
+#         #axis.text.x = element_blank(), 
+#         #axis.text.y = element_text(size=14), 
+#         axis.text.y.right = element_blank(), 
+#         axis.ticks.y.right = element_blank(),
+#         #axis.title.y.right = element_text(size = 16),
+#         axis.ticks.x = element_blank(),
+#         strip.background.x = element_rect(fill="white"), 
+#         strip.text.x = element_text(color="black", size = 16), 
+#         legend.position = "right", 
+#         legend.title = element_blank(),
+#         panel.spacing = unit(0.75, "lines"),
+#         panel.border = element_rect(color = "white", fill = NA, size = 0.5)
+#         )
+# plot_physeq_mums_top10_families
+```
+
+
+# Beta Diversity
+## Long-term
+### fecal samples
+```{r LT: prepare fecal physeq object}
+# Subset samples to include only fecal samples and non-NA treatments
+physeq_LT_fecal <- physeq_LT_trans_abund_subset  %>%
+  subset_samples(!is.na(treatment)) %>%
+  subset_samples(timepoint != "t10")
+```
+
+```{r LT: plot fecal beta diversity (Bray-Curtis)}
+# Perform PCoA ordination using Bray-Curtis distance
+physeq_LT_fecal_bray <- ordinate(physeq_LT_fecal, method = "PCoA", distance = "bray")
+
+# Rename PCoA axes
+colnames(physeq_LT_fecal_bray$vectors)[1:2] <- c("PCoA1", "PCoA2")
+
+# Plot ordination
+plot_physeq_LT_fecal_bray <- plot_ordination(physeq_LT_fecal, physeq_LT_fecal_bray, type = "samples", color = "weeks_on_diet", shape = "treatment") +
+  theme_classic() +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  scale_color_continuous(type = "gradient") +
+  scale_shape_manual(values = c("Ctrl" = 17, "Hp" = 19), labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  geom_point(size = 2) +
+  theme(legend.position = "none",
+        axis.text = element_text(color = "white"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+
+# Extract PCoA coordinates
+colnames(physeq_LT_fecal_bray$vectors)[1:2] <- c("PCoA1", "PCoA2")
+physeq_LT_fecal_bray_coords <- physeq_LT_fecal_bray$vectors[, c("PCoA1", "PCoA2")]
+
+# Combine with sample data
+physeq_LT_fecal_sampledata <- data.frame(sample_data(physeq_LT_fecal))
+physeq_LT_fecal_bray_coords_df <- cbind(physeq_LT_fecal_sampledata, physeq_LT_fecal_bray_coords)
+
+# Create boxplot for PCoA1
+plot_physeq_LT_fecal_bray_pcoa1 <- ggplot(physeq_LT_fecal_bray_coords_df, aes(x = diet, y = PCoA1)) +
+  coord_flip() +
+  geom_jitter(aes(color = weeks_on_diet, shape = treatment), height = 0, width = 0.2, alpha = 0.5, size = 2) +
+  geom_boxplot(outlier.shape = NA, fill = "transparent") +
+  scale_shape_manual(values = c("Ctrl" = 17, "Hp" = 19), labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_color_continuous(type = "gradient") +
+  scale_x_discrete(labels = c("chow", "HFD")) +
+  labs(x = "", y = "PCoA1 [27.6 %]", color = "Time (weeks)", shape = "Treatment") +
+  theme_classic() +
+  theme(axis.title.y = element_blank(), legend.position = "none")
+
+# Create boxplot for PCoA2
+plot_physeq_LT_fecal_bray_pcoa2 <- ggplot(physeq_LT_fecal_bray_coords_df, aes(x = diet, y = PCoA2)) +
+  geom_jitter(aes(color = weeks_on_diet, shape = treatment), height = 0, width = 0.2, alpha = 0.5, size = 2) +
+  geom_boxplot(outlier.shape = NA, fill = "transparent") +
+  scale_shape_manual(values = c("Ctrl" = 17, "Hp" = 19), labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_color_continuous(type = "gradient") +
+  scale_x_discrete(labels = c("chow", "HFD")) +
+  labs(x = "", y = "PCoA2 [18.5 %]", color = "Time on diet (weeks)", shape = "Treatment") +
+  theme_classic() +
+  theme(axis.title.x = element_blank(), legend.position = "none")
+
+# Arrange the plots
+plot_physeq_LT_fecal_betadiv <- ggarrange(plot_physeq_LT_fecal_bray_pcoa2, plot_physeq_LT_fecal_bray, NULL, plot_physeq_LT_fecal_bray_pcoa1,
+                          ncol = 2, 
+                          nrow = 2, 
+                          heights = c(3, 1), 
+                          widths = c(1, 3), 
+                          align = "hv",
+                          common.legend = TRUE,
+                          legend = "right")
+
+plot_physeq_LT_fecal_betadiv
+```
+
+```{r LT: plot PCoA1 betadiv bray over time}
+physeq_LT_fecal_bray_coords_df$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_bray_coords_df$weeks_on_diet)
+
+physeq_LT_fecal_mean_bray_pcoa1_pre_diet <- physeq_LT_fecal_bray_coords_df %>% 
+  filter(weeks_on_diet >= "-1" & weeks_on_diet <= "0") %>% 
+  group_by(weeks_on_diet_factor, sex, treatment_diet) %>%
+  summarize(mean_beta = mean(PCoA1), 
+            SD_beta = sd(PCoA1))
+
+physeq_LT_fecal_mean_bray_pcoa1_post_diet <- physeq_LT_fecal_bray_coords_df %>% 
+  filter(weeks_on_diet >= "0" & weeks_on_diet <= "16") %>% 
+  group_by(weeks_on_diet_factor, sex, treatment_diet) %>%
+  summarize(mean_beta = mean(PCoA1), 
+            SD_beta = sd(PCoA1)) %>%
+  mutate(treatment_diet = case_when(
+    treatment_diet == "Ctrl_chow" & weeks_on_diet_factor == "0" & sex == "female" ~ "Ctrl_HFD",
+    treatment_diet == "Ctrl_chow" & weeks_on_diet_factor == "0" & sex == "male" ~ "Ctrl_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet_factor== "0" & sex == "female" ~ "Hp_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet_factor== "0" & sex == "male" ~ "Hp_HFD",
+    TRUE ~ treatment_diet))
+
+
+
+
+plot_physeq_LT_fecal_mean_bray_pcoa1 <- ggplot() + 
+  geom_line(data=physeq_LT_fecal_bray_coords_df, aes(x=weeks_on_diet_factor,y=PCoA1,color=treatment_diet, group=mouseID), alpha=0.3, size=0.5) + 
+  geom_line(data = physeq_LT_fecal_mean_bray_pcoa1_pre_diet, aes(x=weeks_on_diet_factor, y=mean_beta, group=treatment_diet, color=treatment_diet, linetype = treatment_diet), size=1) +
+  geom_line(data = physeq_LT_fecal_mean_bray_pcoa1_post_diet, aes(x=weeks_on_diet_factor, y=mean_beta, group=treatment_diet, color=treatment_diet, linetype = treatment_diet), size=1) +
+  geom_vline(xintercept = "0", linetype = "solid", color="black") + 
+  labs(x = "Time on diet (weeks)", y = "PCoA1") +
+  theme_pubr(border = TRUE) +
+    scale_color_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "#0072B2",
+      "Ctrl_HFD" = "#0072B2",
+      "Hp_chow" = "#E69F00",
+      "Hp_HFD" = "#E69F00")) +
+  scale_linetype_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "dashed",
+      "Ctrl_HFD" = "solid",
+      "Hp_chow" = "dashed",
+      "Hp_HFD" = "solid")) + 
+  facet_grid(~sex) + 
+  scale_x_discrete(breaks = c("-1", "0", "1", "3", "5", "11", "16"), expand = c(0,0)) +
+  scale_y_continuous(limits=c(-0.405, 0.605), breaks = c(-0.4, -0.2, 0, 0.2, 0.4, 0.6)) + 
+  #scale_y_continuous(limits=c(0,150), breaks = c(0, 50, 100, 150)) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(size=12), 
+        axis.title.y = element_text(size = 12), 
+        axis.title.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 12), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.key.height = unit(0.5, 'cm'),  # Adjust the height
+        legend.key.width = unit(1, 'cm'),
+        legend.background = element_rect(color = "black", size = 0.5),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        strip.background = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.spacing = unit(1, "lines")) + 
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))  
+plot_physeq_LT_fecal_mean_bray_pcoa1
+```
+
+```{r LT: plot PCoA2 betadiv bray over time}
+physeq_LT_fecal_bray_coords_df$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_bray_coords_df$weeks_on_diet)
+
+physeq_LT_fecal_mean_bray_pcoa2_pre_diet <- physeq_LT_fecal_bray_coords_df %>% 
+  filter(weeks_on_diet >= "-1" & weeks_on_diet <= "0") %>% 
+  group_by(weeks_on_diet_factor, sex, treatment_diet) %>%
+  summarize(mean_beta = mean(PCoA2), 
+            SD_beta = sd(PCoA2))
+
+physeq_LT_fecal_mean_bray_pcoa2_post_diet <- physeq_LT_fecal_bray_coords_df %>% 
+  filter(weeks_on_diet >= "0" & weeks_on_diet <= "16") %>% 
+  group_by(weeks_on_diet_factor, sex, treatment_diet) %>%
+  summarize(mean_beta = mean(PCoA2), 
+            SD_beta = sd(PCoA2)) %>%
+  mutate(treatment_diet = case_when(
+    treatment_diet == "Ctrl_chow" & weeks_on_diet_factor == "0" & sex == "female" ~ "Ctrl_HFD",
+    treatment_diet == "Ctrl_chow" & weeks_on_diet_factor == "0" & sex == "male" ~ "Ctrl_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet_factor== "0" & sex == "female" ~ "Hp_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet_factor== "0" & sex == "male" ~ "Hp_HFD",
+    TRUE ~ treatment_diet))
+
+
+plot_physeq_LT_fecal_mean_bray_pcoa2 <- ggplot() + 
+  geom_line(data=physeq_LT_fecal_bray_coords_df, aes(x=weeks_on_diet_factor,y=PCoA2,color=treatment_diet, group=mouseID), alpha=0.3, size=0.5) + 
+  geom_line(data = physeq_LT_fecal_mean_bray_pcoa2_pre_diet, aes(x=weeks_on_diet_factor, y=mean_beta, group=treatment_diet, color=treatment_diet, linetype = treatment_diet), size=1) +
+  geom_line(data = physeq_LT_fecal_mean_bray_pcoa2_post_diet, aes(x=weeks_on_diet_factor, y=mean_beta, group=treatment_diet, color=treatment_diet, linetype = treatment_diet), size=1) +
+  geom_vline(xintercept = "0", linetype = "solid", color="black") + 
+  labs(x = "Time on diet (weeks)", y = "PCoA2") +
+  theme_pubr(border = TRUE) +
+    scale_color_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "#0072B2",
+      "Ctrl_HFD" = "#0072B2",
+      "Hp_chow" = "#E69F00",
+      "Hp_HFD" = "#E69F00")) +
+  scale_linetype_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "dashed",
+      "Ctrl_HFD" = "solid",
+      "Hp_chow" = "dashed",
+      "Hp_HFD" = "solid")) + 
+  facet_grid(~sex) + 
+  scale_x_discrete(breaks = c("-1", "0", "1", "3", "5", "11", "16"), expand = c(0,0)) +
+  scale_y_continuous(limits=c(-0.65, 0.25), breaks = c(-0.6, -0.4, -0.2, 0, 0.2)) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(size=12), 
+        axis.title.y = element_text(size = 12), 
+        axis.title.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 12), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "none", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.key.height = unit(0.5, 'cm'),  # Adjust the height
+        legend.key.width = unit(1, 'cm'),
+        legend.background = element_rect(color = "black", size = 0.5),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        strip.background = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.spacing = unit(1, "lines")) + 
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))   
+plot_physeq_LT_fecal_mean_bray_pcoa2
+```
+
+```{r LT: linear mixed effects models on PCoA1 and PCoA2}
+# Fit a linear mixed-effects model for PCoA1
+physeq_LT_fecal_bray_pcoa1_LMM <- lmerTest::lmer(PCoA1 ~ treatment * sex * diet + (1 | mouseID), data = physeq_LT_fecal_bray_coords_df)
+
+# Print a summary of the fitted model
+print(summary(physeq_LT_fecal_bray_pcoa1_LMM))
+
+# Generate a nicely formatted table of the model results
+tab_model(physeq_LT_fecal_bray_pcoa1_LMM)
+
+# Fit a linear mixed-effects model for PCoA2
+physeq_LT_fecal_bray_pcoa2_LMM <- lmerTest::lmer(PCoA2 ~ treatment * sex * diet + (1 | mouseID), data = physeq_LT_fecal_bray_coords_df)
+
+# Print a summary of the fitted model
+print(summary(physeq_LT_fecal_bray_pcoa2_LMM))
+
+# Generate a nicely formatted table of the model results
+tab_model(physeq_LT_fecal_bray_pcoa2_LMM)
+```
+
+```{r LT permanova analysis of fecal samples}
+# Convert sample data from phyloseq object to a data frame
+physeq_LT_fecal_sampledata <- as(sample_data(physeq_LT_fecal), "data.frame")
+
+# Set up permutation scheme
+# 'strata' ensures permutations are done within levels of 'mouseID'
+# 'nperm' specifies the number of permutations (999 in this case)
+h <- how(plots = Plots(strata = physeq_LT_fecal_sampledata$mouseID, type = "none"),
+         nperm = 999)
+
+# Calculate Bray-Curtis distance matrix for the phyloseq object
+df <- phyloseq::distance(physeq_LT_fecal, method = "bray")
+
+# Perform PERMANOVA (Permutational Multivariate Analysis of Variance)
+# 'df' is the distance matrix
+# 'treatment*diet*sex' specifies the model with interaction terms
+# 'data' is the sample data frame
+# 'perm' is the permutation scheme
+# 'by = "terms"' tests each term (main effects and interactions) separately
+physeq_LT_fecal_bray_permanova <- adonis2(df ~ treatment * diet * sex,
+                                          data = physeq_LT_fecal_sampledata,
+                                          perm = h,
+                                          by = "terms")
+
+# Print the results of the PERMANOVA
+physeq_LT_fecal_bray_permanova
+```
+
+```{r LT permanova results summary table}
+# Convert PERMANOVA results to a tidy data frame
+physeq_LT_fecal_bray_permanova_table <- tidy(physeq_LT_fecal_bray_permanova)
+
+# Display the tidy data frame
+physeq_LT_fecal_bray_permanova_table
+
+# Rename columns for better readability
+physeq_LT_fecal_bray_permanova_table_new <- physeq_LT_fecal_bray_permanova_table %>%
+  dplyr::rename(
+    "Term" = "term", 
+    "Sum of Squares" = "SumOfSqs", 
+    "Statistic" = "statistic", 
+    "P value" = "p.value"
+  )
+
+# Round numeric columns to 3 decimal places
+physeq_LT_fecal_bray_permanova_table_new <- physeq_LT_fecal_bray_permanova_table_new %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+# Create a ggtexttable for the PERMANOVA results
+physeq_LT_fecal_bray_permanova_table_plot <- ggtexttable(physeq_LT_fecal_bray_permanova_table_new, rows = NULL, theme = ttheme("blank")) %>%
+  tab_add_hline(at.row = 1:2, row.side = "top", linewidth = 2) %>%  # Add a thick top border
+  tab_add_hline(at.row = 8, row.side = "bottom", linewidth = 2, linetype = 1) %>%  # Add a thick bottom border after the main terms
+  tab_add_hline(at.row = 10, row.side = "bottom", linewidth = 2, linetype = 1) 
+
+# Display the ggtexttable
+physeq_LT_fecal_bray_permanova_table_plot
+
+```
+
+```{r LT: prepare fecal beta diversity plots}
+# Combine PCoA1 and PCoA2 plots side by side
+combined_plots_physeq_LT_fecal_mean_pcoa1_pcoa2 <- ggarrange(
+  plot_physeq_LT_fecal_mean_bray_pcoa1, 
+  plot_physeq_LT_fecal_mean_bray_pcoa2, 
+  ncol = 2, 
+  nrow = 1, 
+  labels = c("C", "D"),  
+  align = "h", 
+  common.legend = TRUE, 
+  legend = "bottom"
+)
+
+# Combine all plots into a single figure
+LT_fecal_beta_div_plot <- ggarrange(
+  plot_physeq_LT_fecal_betadiv, 
+  physeq_LT_fecal_bray_permanova_table_plot, 
+  combined_plots_physeq_LT_fecal_mean_pcoa1_pcoa2, 
+  nrow = 3, 
+  labels = c("A", "B", ""),  
+  align = "v", 
+  common.legend = FALSE
+)
+
+# Display the combined figure
+LT_fecal_beta_div_plot
+
+# Add extra space under the legend
+LT_fecal_beta_div_plot <- annotate_figure(
+  LT_fecal_beta_div_plot,
+  bottom = text_grob(" ", vjust = 1.5)  # Adjust vjust to add space
+)
+
+# save figure 
+#ggsave("25.03.10_MS1_fecal_beta_div.jpeg", plot = LT_fecal_beta_div_plot, device = "jpeg", path = ("figures"), units="cm",  width=20, height=30, dpi=300)
+```
+
+### GIT samples 
+```{r LT: prepara physeq object for gastrointestinal (GIT) samples}
+# Subset samples to include only GIT samples and non-NA treatments
+physeq_LT_git <- physeq_LT_trans_abund_subset  %>%
+  subset_samples(!is.na(treatment)) %>%
+  subset_samples(timepoint == "t10")
+```
+
+```{r LT: plot beta diversity for colonic samples}
+# Subset samples to include only colon samples
+physeq_LT_colon <- subset_samples(physeq_LT_git, sample_site == "colon")
+
+# Perform PCoA ordination using Bray-Curtis distance
+physeq_LT_colon_bray <- ordinate(physeq_LT_colon, method = "PCoA", distance = "bray")
+
+# Rename PCoA axes
+colnames(physeq_LT_colon_bray$vectors)[1:2] <- c("PCoA1", "PCoA2")
+
+# Plot ordination
+plot_physeq_LT_colon_bray <- plot_ordination(physeq_LT_colon, physeq_LT_colon_bray, type = "samples", color = "treatment") +
+  facet_grid(~sex) + 
+  scale_x_continuous(limits = c(-1.2, 1.2), breaks = c(-1, -0.5, 0, 0.5, 1)) + 
+  scale_y_continuous(limits = c(-1.2, 1.2), breaks = c(-1, -0.5, 0, 0.5, 1)) + 
+  stat_ellipse(type = "norm", alpha = 0.5, show.legend = FALSE) +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) + 
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) + 
+  ggtitle("COLON") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "none", 
+        legend.title = element_blank(), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        legend.text = element_text(size = 12, color = "white"),  # Set legend text color to white
+        legend.key = element_rect(fill = "white", color = "white"),  # Set legend key color to white
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+  guides(color = guide_legend(override.aes = list(color = "white", size = 5)))  # Override legend point color to white and size to 5
+
+# Display the plot
+plot_physeq_LT_colon_bray
+```
+
+```{r LT: permanova analysis of colonic samples}
+# Convert sample data from phyloseq object to a data frame
+physeq_LT_colon_sampledata <- as(sample_data(physeq_LT_colon), "data.frame")
+
+# Perform PERMANOVA (Permutational Multivariate Analysis of Variance)
+# Using Bray-Curtis distance matrix
+physeq_LT_colon_permanova <- adonis2(
+  phyloseq::distance(physeq_LT_colon, method = "bray") ~ treatment * sex,
+  data = physeq_LT_colon_sampledata,
+  permutations = 999
+)
+
+# Display the PERMANOVA results
+physeq_LT_colon_permanova
+```
+
+```{r LT: summary table of permanova analysis of colonic samples}
+# Convert PERMANOVA results to a tidy data frame
+physeq_LT_colon_permanova_table <- tidy(physeq_LT_colon_permanova)
+
+# Display the tidy data frame
+physeq_LT_colon_permanova_table
+
+# Rename columns for better readability
+physeq_LT_colon_permanova_table_new <- physeq_LT_colon_permanova_table %>%
+  dplyr::rename(
+    "Term" = "term",
+    "Sum of Squares" = "SumOfSqs",
+    "Statistic" = "statistic",
+    "P value" = "p.value"
+  )
+
+# Round numeric columns to 3 decimal places
+physeq_LT_colon_permanova_table_new <- physeq_LT_colon_permanova_table_new %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+# Create a ggtexttable for the PERMANOVA results
+physeq_LT_colon_permanova_table_plot <- ggtexttable(
+  physeq_LT_colon_permanova_table_new, 
+  rows = NULL, 
+  theme = ttheme("blank")
+) %>%
+  tab_add_hline(at.row = 1:2, row.side = "top", linewidth = 2) %>%  # Add a thick top border
+  tab_add_hline(at.row = 4, row.side = "bottom", linewidth = 2, linetype = 1) %>%  # Add a thick bottom border after the main terms
+  tab_add_hline(at.row = 6, row.side = "bottom", linewidth = 2, linetype = 1)  # Add a thick bottom border after the residuals
+
+# Display the ggtexttable
+physeq_LT_colon_permanova_table_plot
+```
+
+```{r LT: plot beta diversity for cecal samples}
+# Subset samples to include only cecum samples
+physeq_LT_cecum <- subset_samples(physeq_LT_git, sample_site == "cecum")
+
+# Perform PCoA ordination using Bray-Curtis distance
+physeq_LT_cecum_bray <- ordinate(physeq_LT_cecum, method = "PCoA", distance = "bray")
+
+# Rename PCoA axes
+colnames(physeq_LT_cecum_bray$vectors)[1:2] <- c("PCoA1", "PCoA2")
+
+# Plot ordination
+plot_physeq_LT_cecum_bray <- plot_ordination(physeq_LT_cecum, physeq_LT_cecum_bray, type = "samples", color = "treatment") +
+  facet_grid(~sex) + 
+  scale_x_continuous(limits = c(-1.2, 1.2), breaks = c(-1, -0.5, 0, 0.5, 1)) + 
+  scale_y_continuous(limits = c(-1.2, 1.2), breaks = c(-1, -0.5, 0, 0.5, 1)) + 
+  stat_ellipse(type = "norm", alpha = 0.5, show.legend = FALSE) +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) + 
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) + 
+  ggtitle("CECUM") + 
+  theme_bw() + 
+ theme(axis.text.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) 
+
+
+# Display the plot
+plot_physeq_LT_cecum_bray
+```
+
+```{r LT: permanova analysis of cecal samples}
+# Convert sample data from phyloseq object to a data frame
+physeq_LT_cecum_sampledata <- as(sample_data(physeq_LT_cecum), "data.frame")
+
+# Perform PERMANOVA (Permutational Multivariate Analysis of Variance)
+# Using Bray-Curtis distance matrix
+physeq_LT_cecum_permanova <- adonis2(
+  phyloseq::distance(physeq_LT_cecum, method = "bray") ~ treatment * sex,
+  data = physeq_LT_cecum_sampledata,
+  permutations = 999
+)
+
+# Display the PERMANOVA results
+physeq_LT_cecum_permanova
+```
+
+```{r LT: summary table of permanova analysis of cecal samples}
+# Convert PERMANOVA results to a tidy data frame
+physeq_LT_cecum_permanova_table <- tidy(physeq_LT_cecum_permanova)
+
+# Display the tidy data frame
+physeq_LT_cecum_permanova_table
+
+# Rename columns for better readability
+physeq_LT_cecum_permanova_table_new <- physeq_LT_cecum_permanova_table %>%
+  dplyr::rename(
+    "Term" = "term",
+    "Sum of Squares" = "SumOfSqs",
+    "Statistic" = "statistic",
+    "P value" = "p.value"
+  )
+
+# Round numeric columns to 3 decimal places
+physeq_LT_cecum_permanova_table_new <- physeq_LT_cecum_permanova_table_new %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+# Create a ggtexttable for the PERMANOVA results
+physeq_LT_cecum_permanova_table_plot <- ggtexttable(
+  physeq_LT_cecum_permanova_table_new, 
+  rows = NULL, 
+  theme = ttheme("blank")
+) %>%
+  tab_add_hline(at.row = 1:2, row.side = "top", linewidth = 2) %>%  # Add a thick top border
+  tab_add_hline(at.row = 4, row.side = "bottom", linewidth = 2, linetype = 1) %>%  # Add a thick bottom border after the main terms
+  tab_add_hline(at.row = 6, row.side = "bottom", linewidth = 2, linetype = 1)  # Add a thick bottom border after the residuals
+
+# Display the ggtexttable
+physeq_LT_cecum_permanova_table_plot
+```
+
+```{r LT: plot beta diversity for ileal samples}
+# Subset samples to include only ileum samples
+physeq_LT_ileum <- subset_samples(physeq_LT_git, sample_site == "ileum")
+
+# Perform PCoA ordination using Bray-Curtis distance
+physeq_LT_ileum_bray <- ordinate(physeq_LT_ileum, method = "PCoA", distance = "bray")
+
+# Rename PCoA axes
+colnames(physeq_LT_ileum_bray$vectors)[1:2] <- c("PCoA1", "PCoA2")
+
+# Plot ordination
+plot_physeq_LT_ileum_bray <- plot_ordination(physeq_LT_ileum, physeq_LT_ileum_bray, type = "samples", color = "treatment") +
+  facet_grid(~sex) + 
+  scale_x_continuous(limits = c(-1.5, 1.5), breaks = c(-1.5, -0.75, 0, 0.75, 1.5)) + 
+  scale_y_continuous(limits = c(-1.2, 1.2), breaks = c(-1, -0.5, 0, 0.5, 1)) + 
+  stat_ellipse(type = "norm", alpha = 0.5, show.legend = FALSE) +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) + 
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) + 
+  ggtitle("ILEUM") + 
+  theme_bw() + 
+ theme(axis.text.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) 
+
+
+# Display the plot
+plot_physeq_LT_ileum_bray
+```
+
+```{r LT: permanova analysis of ileal samples}
+# Convert sample data from phyloseq object to a data frame
+physeq_LT_ileum_sampledata <- as(sample_data(physeq_LT_ileum), "data.frame")
+
+# Perform PERMANOVA (Permutational Multivariate Analysis of Variance)
+# Using Bray-Curtis distance matrix
+physeq_LT_ileum_permanova <- adonis2(
+  phyloseq::distance(physeq_LT_ileum, method = "bray") ~ treatment * sex,
+  data = physeq_LT_ileum_sampledata,
+  permutations = 999
+)
+
+# Display the PERMANOVA results
+physeq_LT_ileum_permanova
+```
+
+```{r LT: summary table of permanova analysis of ileal samples}
+# Convert PERMANOVA results to a tidy data frame
+physeq_LT_ileum_permanova_table <- tidy(physeq_LT_ileum_permanova)
+
+# Display the tidy data frame
+physeq_LT_ileum_permanova_table
+
+# Rename columns for better readability
+physeq_LT_ileum_permanova_table_new <- physeq_LT_ileum_permanova_table %>%
+  dplyr::rename(
+    "Term" = "term",
+    "Sum of Squares" = "SumOfSqs",
+    "Statistic" = "statistic",
+    "P value" = "p.value"
+  )
+
+# Round numeric columns to 3 decimal places
+physeq_LT_ileum_permanova_table_new <- physeq_LT_ileum_permanova_table_new %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+# Create a ggtexttable for the PERMANOVA results
+physeq_LT_ileum_permanova_table_plot <- ggtexttable(
+  physeq_LT_ileum_permanova_table_new, 
+  rows = NULL, 
+  theme = ttheme("blank")
+) %>%
+  tab_add_hline(at.row = 1:2, row.side = "top", linewidth = 2) %>%  # Add a thick top border
+  tab_add_hline(at.row = 4, row.side = "bottom", linewidth = 2, linetype = 1) %>%  # Add a thick bottom border after the main terms
+  tab_add_hline(at.row = 6, row.side = "bottom", linewidth = 2, linetype = 1)  # Add a thick bottom border after the residuals
+
+# Display the ggtexttable
+physeq_LT_ileum_permanova_table_plot
+```
+
+```{r LT: plot beta diversity for gastric samples}
+# Subset samples to include only stomach samples
+physeq_LT_stomach <- subset_samples(physeq_LT_git, sample_site == "stomach")
+
+# Perform PCoA ordination using Bray-Curtis distance
+physeq_LT_stomach_bray <- ordinate(physeq_LT_stomach, method = "PCoA", distance = "bray")
+
+# Rename PCoA axes
+colnames(physeq_LT_stomach_bray$vectors)[1:2] <- c("PCoA1", "PCoA2")
+
+# Plot ordination
+plot_physeq_LT_stomach_bray <- plot_ordination(physeq_LT_stomach, physeq_LT_stomach_bray, type = "samples", color = "treatment") +
+  facet_grid(~sex) + 
+  scale_x_continuous(limits = c(-1.4, 1.4), breaks = c(-1, -0.5, 0, 0.5, 1)) + 
+  scale_y_continuous(limits = c(-1.2, 1.2), breaks = c(-1, -0.5, 0, 0.5, 1)) + 
+  stat_ellipse(type = "norm", alpha = 0.5, show.legend = FALSE) +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) + 
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) + 
+  ggtitle("STOMACH") + 
+  theme_bw() + 
+ theme(axis.text.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "none", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) 
+
+
+# Display the plot
+plot_physeq_LT_stomach_bray
+```
+
+```{r LT: permanova analysis of gastric samples}
+# Convert sample data from phyloseq object to a data frame
+physeq_LT_stomach_sampledata <- as(sample_data(physeq_LT_stomach), "data.frame")
+
+# Perform PERMANOVA (Permutational Multivariate Analysis of Variance)
+# Using Bray-Curtis distance matrix
+physeq_LT_stomach_permanova <- adonis2(
+  phyloseq::distance(physeq_LT_stomach, method = "bray") ~ treatment * sex,
+  data = physeq_LT_stomach_sampledata,
+  permutations = 999
+)
+
+# Display the PERMANOVA results
+physeq_LT_stomach_permanova
+```
+
+```{r LT: summary table of permanova analysis of gastric samples}
+# Convert PERMANOVA results to a tidy data frame
+physeq_LT_stomach_permanova_table <- tidy(physeq_LT_stomach_permanova)
+
+# Display the tidy data frame
+physeq_LT_stomach_permanova_table
+
+# Rename columns for better readability
+physeq_LT_stomach_permanova_table_new <- physeq_LT_stomach_permanova_table %>%
+  dplyr::rename(
+    "Term" = "term",
+    "Sum of Squares" = "SumOfSqs",
+    "Statistic" = "statistic",
+    "P value" = "p.value"
+  )
+
+# Round numeric columns to 3 decimal places
+physeq_LT_stomach_permanova_table_new <- physeq_LT_stomach_permanova_table_new %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+# Create a ggtexttable for the PERMANOVA results
+physeq_LT_stomach_permanova_table_plot <- ggtexttable(
+  physeq_LT_stomach_permanova_table_new, 
+  rows = NULL, 
+  theme = ttheme("blank")
+) %>%
+  tab_add_hline(at.row = 1:2, row.side = "top", linewidth = 2) %>%  # Add a thick top border
+  tab_add_hline(at.row = 4, row.side = "bottom", linewidth = 2, linetype = 1) %>%  # Add a thick bottom border after the main terms
+  tab_add_hline(at.row = 6, row.side = "bottom", linewidth = 2, linetype = 1)  # Add a thick bottom border after the residuals
+
+# Display the ggtexttable
+physeq_LT_stomach_permanova_table_plot
+```
+
+```{r LT: combine PCoA plots with PERMANOVA tables}
+# Arrange the plots in a 2x2 grid with common legend at the bottom
+LT_git_beta_div_plots <- ggarrange(
+  plot_physeq_LT_stomach_bray, 
+  physeq_LT_stomach_permanova_table_plot,
+  plot_physeq_LT_ileum_bray, 
+  physeq_LT_ileum_permanova_table_plot,
+  plot_physeq_LT_cecum_bray, 
+  physeq_LT_cecum_permanova_table_plot,
+  plot_physeq_LT_colon_bray, 
+  physeq_LT_colon_permanova_table_plot,
+  nrow = 4,  # Number of rows
+  ncol = 2,  # Number of columns
+  labels = c("A", "", "B", "", "C", "", "D", ""),  # Labels for each plot
+  common.legend = TRUE,  # Use a common legend for all plots
+  legend = "bottom"  # Position the legend at the bottom
+)
+
+# Display the combined plot
+LT_git_beta_div_plots
+
+# save plot
+#ggsave("25.04.15_LT_git_beta_diversity.jpeg", plot = LT_git_beta_div_plots, device = "jpeg", path = ("supplementary"), units="cm",  width=27.5, height=30, dpi=300)
+```
+
+
+## Short-term 
+### fecal samples
+```{r ST: prepare fecal physeq object}
+# Subset samples to include only fecal samples and non-NA treatments
+physeq_ST_fecal <- physeq_ST_trans_abund_subset  %>%
+  subset_samples(!is.na(treatment)) %>%
+  subset_samples(timepoint != "t4") 
+```
+
+```{r ST: plot fecal beta diversity (Bray-Curtis)}
+# Perform PCoA ordination using Bray-Curtis distance
+physeq_ST_fecal_bray <- ordinate(physeq_ST_fecal, method = "PCoA", distance = "bray")
+
+# Rename PCoA axes
+colnames(physeq_ST_fecal_bray$vectors)[1:2] <- c("PCoA1", "PCoA2")
+
+# Plot ordination
+plot_physeq_ST_fecal_bray <- plot_ordination(physeq_ST_fecal, physeq_ST_fecal_bray, type = "samples", color = "weeks_on_diet_factor", shape = "treatment") +
+  theme_classic() +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  scale_color_manual(values = c("-2" = "#000099", "0" = "#0066ff", "1" = "#99ccff")) +
+  scale_shape_manual(values = c("Ctrl" = 17, "Hp" = 19), labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  geom_point(size = 2) +
+  theme(legend.position = "none",
+        axis.text = element_text(color = "white"),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+
+# Extract PCoA coordinates
+colnames(physeq_ST_fecal_bray$vectors)[1:2] <- c("PCoA1", "PCoA2")
+physeq_ST_fecal_bray_coords <- physeq_ST_fecal_bray$vectors[, c("PCoA1", "PCoA2")]
+
+# Combine with sample data
+physeq_ST_fecal_sampledata <- data.frame(sample_data(physeq_ST_fecal))
+physeq_ST_fecal_bray_coords_df <- cbind(physeq_ST_fecal_sampledata, physeq_ST_fecal_bray_coords)
+
+# Create boxplot for PCoA1
+plot_physeq_ST_fecal_bray_pcoa1 <- ggplot(physeq_ST_fecal_bray_coords_df, aes(x = diet_new, y = PCoA1)) +
+  coord_flip() +
+  geom_jitter(aes(color = weeks_on_diet_factor, shape = treatment), height = 0, width = 0.2, alpha = 0.5, size = 2) +
+  geom_boxplot(outlier.shape = NA, fill = "transparent") +
+  scale_shape_manual(values = c("Ctrl" = 17, "Hp" = 19), labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_color_manual(values = c("-2" = "#000099", "0" = "#0066ff", "1" = "#99ccff")) +
+  labs(x = "", y = "PCoA1 [29 %]", color = "Time on diet (weeks)", shape = "Treatment") +
+  theme_classic() +
+  theme(axis.title.y = element_blank(), legend.position = "none")
+
+# Create boxplot for PCoA2
+plot_physeq_ST_fecal_bray_pcoa2 <- ggplot(physeq_ST_fecal_bray_coords_df, aes(x = diet_new, y = PCoA2)) +
+  geom_jitter(aes(color = weeks_on_diet_factor, shape = treatment), height = 0, width = 0.2, alpha = 0.5, size = 2) +
+  geom_boxplot(outlier.shape = NA, fill = "transparent") +
+  scale_shape_manual(values = c("Ctrl" = 17, "Hp" = 19), labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_color_manual(values = c("-2" = "#000099", "0" = "#0066ff", "1" = "#99ccff")) +
+  labs(x = "", y = "PCoA1 [11.3 %]", color = "Time on diet (weeks)", shape = "Treatment") +
+  theme_classic() +
+  theme(axis.title.x = element_blank(), legend.position = "none")
+
+# Arrange the plots
+plot_physeq_ST_fecal_betadiv <- ggarrange(plot_physeq_ST_fecal_bray_pcoa2, plot_physeq_ST_fecal_bray, NULL, plot_physeq_ST_fecal_bray_pcoa1,
+                          ncol = 2, 
+                          nrow = 2, 
+                          heights = c(3, 1), 
+                          widths = c(1, 3), 
+                          align = "hv",
+                          common.legend = TRUE,
+                          legend = "right")
+
+plot_physeq_ST_fecal_betadiv
+```
+```{r ST: plot PCoA1 betadiv bray over time}
+# Pre-diet data
+physeq_ST_fecal_mean_bray_pcoa1_pre_diet <- physeq_ST_fecal_bray_coords_df %>% 
+  filter(weeks_on_diet <= 0) %>% 
+  group_by(weeks_on_diet_factor, sex, treatment_diet_new) %>%
+  summarize(mean_beta = mean(PCoA1), 
+            SD_beta = sd(PCoA1))
+
+# Post-diet data
+physeq_ST_fecal_mean_bray_pcoa1_post_diet <- physeq_ST_fecal_bray_coords_df %>% 
+  filter(weeks_on_diet >= 0) %>% 
+  group_by(weeks_on_diet_factor, sex, treatment_diet_new) %>%
+  summarize(mean_beta = mean(PCoA1), 
+            SD_beta = sd(PCoA1)) %>%
+  dplyr::slice(rep(1:n(), each = ifelse(treatment_diet_new == "Ctrl_chow" & (sex == "female" | sex == "male"), 2, 1))) %>%
+  mutate(treatment_diet_new = case_when(
+    treatment_diet_new == "Ctrl_chow" & row_number() %% 2 == 1 ~ "Ctrl_CD",
+    treatment_diet_new == "Ctrl_chow" & row_number() %% 2 == 0 ~ "Ctrl_HFD",
+    treatment_diet_new == "Hp_chow" & row_number() %% 2 == 1 ~ "Hp_CD",
+    treatment_diet_new == "Hp_chow" & row_number() %% 2 == 0 ~ "Hp_HFD",
+    TRUE ~ treatment_diet_new
+  ))
+
+# Step 1: Create the initial plot with the two lines
+plot_physeq_ST_fecal_mean_bray_pcoa1_1 <- ggplot() + 
+  geom_line(data=physeq_ST_fecal_mean_bray_pcoa1_pre_diet, 
+            aes(x=weeks_on_diet_factor, y=mean_beta, color=treatment_diet_new, linetype=treatment_diet_new, group = treatment_diet_new), 
+            size=1) +
+  geom_line(data=physeq_ST_fecal_mean_bray_pcoa1_post_diet, 
+            aes(x=weeks_on_diet_factor, y=mean_beta, color=treatment_diet_new, linetype=treatment_diet_new, group = treatment_diet_new), 
+            size=1) +
+  labs(x = "Time on diet (weeks)", y = "PCoA1") +
+  geom_vline(xintercept = "0", linetype = "solid", color="black") + 
+  theme_pubr(border = TRUE) +
+  scale_color_manual(
+    values = c(
+      "Ctrl_chow" = "#0072B2",
+      "Ctrl_CD" = "#0072B2",
+      "Ctrl_HFD" = "#0072B2",
+      "Hp_chow" = "#E69F00",
+      "Hp_CD" = "#E69F00",
+      "Hp_HFD" = "#E69F00"),
+    breaks = c("Ctrl_chow", "Hp_chow", "Ctrl_CD", "Hp_CD", "Ctrl_HFD", "Hp_HFD"),
+    labels = c(
+      "Ctrl_chow" = expression("Control + chow"),
+      "Ctrl_CD" = expression("Control + CD"),
+      "Ctrl_HFD" = expression("Control + HFD"),
+      "Hp_chow" = expression(italic("H. pylori") * " + chow"),
+      "Hp_CD" = expression(italic("H. pylori") * " + CD"),
+      "Hp_HFD" = expression(italic("H. pylori") * " + HFD"))) +
+  scale_linetype_manual(
+    values = c(
+      "Ctrl_chow" = "dashed",
+      "Ctrl_CD" = "dotted",
+      "Ctrl_HFD" = "solid",
+      "Hp_chow" = "dashed",
+      "Hp_CD" = "dotted",
+      "Hp_HFD" = "solid"),
+    breaks = c("Ctrl_chow", "Hp_chow", "Ctrl_CD", "Hp_CD", "Ctrl_HFD", "Hp_HFD"),
+    labels = c(
+      "Ctrl_chow" = expression("Control + chow"),
+      "Ctrl_CD" = expression("Control + CD"),
+      "Ctrl_HFD" = expression("Control + HFD"),
+      "Hp_chow" = expression(italic("H. pylori") * " + chow"),
+      "Hp_CD" = expression(italic("H. pylori") * " + CD"),
+      "Hp_HFD" = expression(italic("H. pylori") * " + HFD"))) + 
+  facet_grid(~sex) + 
+  scale_x_discrete(breaks = c("-2", "0", "1"), expand = c(0,0)) +
+  theme_bw() + 
+theme(axis.text.x = element_text(size=12), 
+        axis.title.y = element_text(size = 12), 
+        axis.title.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 12), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.key.height = unit(0.5, 'cm'),  # Adjust the height
+        legend.key.width = unit(1, 'cm'),
+        legend.background = element_rect(color = "black", size = 0.5),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        strip.background = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.spacing = unit(1, "lines")) 
+plot_physeq_ST_fecal_mean_bray_pcoa1_1
+
+# Step 2: Add the first geom_line
+plot_physeq_ST_fecal_mean_bray_pcoa1_2 <- plot_physeq_ST_fecal_mean_bray_pcoa1_1 + 
+  geom_line(data=physeq_ST_fecal_bray_coords_df, 
+            aes(x=weeks_on_diet_factor, y=PCoA1, color=treatment_diet_new, group=mouseID), 
+            alpha=0.3, size=0.5, show.legend = FALSE) + 
+  geom_vline(xintercept = 0, linetype = "solid", color="black")
+
+# Display the final plot
+plot_physeq_ST_fecal_mean_bray_pcoa1_2
+```
+
+
+
+```{r ST: plot PCoA2 betadiv bray over time}
+# Pre-diet data
+physeq_ST_fecal_mean_bray_pcoa2_pre_diet <- physeq_ST_fecal_bray_coords_df %>% 
+  filter(weeks_on_diet >= -2 & weeks_on_diet <= 0) %>% 
+  group_by(weeks_on_diet_factor, sex, treatment_diet_new) %>%
+  summarize(mean_beta = mean(PCoA2), 
+            SD_beta = sd(PCoA2))
+
+# Post-diet data
+physeq_ST_fecal_mean_bray_pcoa2_post_diet <- physeq_ST_fecal_bray_coords_df %>% 
+  filter(weeks_on_diet >= 0 & weeks_on_diet <= 1) %>% 
+  group_by(weeks_on_diet_factor, sex, treatment_diet_new) %>%
+  summarize(mean_beta = mean(PCoA2), 
+            SD_beta = sd(PCoA2)) %>%
+  dplyr::slice(rep(1:n(), each = ifelse(treatment_diet_new == "Ctrl_chow" & (sex == "female" | sex == "male"), 2, 1))) %>%
+  mutate(treatment_diet_new = case_when(
+    treatment_diet_new == "Ctrl_chow" & row_number() %% 2 == 1 ~ "Ctrl_CD",
+    treatment_diet_new == "Ctrl_chow" & row_number() %% 2 == 0 ~ "Ctrl_HFD",
+    treatment_diet_new == "Hp_chow" & row_number() %% 2 == 1 ~ "Hp_CD",
+    treatment_diet_new == "Hp_chow" & row_number() %% 2 == 0 ~ "Hp_HFD",
+    TRUE ~ treatment_diet_new
+  ))
+
+# Step 1: Create the initial plot with the two lines
+plot_physeq_ST_fecal_mean_bray_pcoa2_1 <- ggplot() + 
+  geom_line(data=physeq_ST_fecal_mean_bray_pcoa2_pre_diet, 
+            aes(x=weeks_on_diet_factor, y=mean_beta, color=treatment_diet_new, linetype=treatment_diet_new, group = treatment_diet_new), 
+            size=1) +
+  geom_line(data=physeq_ST_fecal_mean_bray_pcoa2_post_diet, 
+            aes(x=weeks_on_diet_factor, y=mean_beta, color=treatment_diet_new, linetype=treatment_diet_new, group = treatment_diet_new), 
+            size=1) +
+  labs(x = "Time on diet (weeks)", y = "PCoA2") +
+  geom_vline(xintercept = "0", linetype = "solid", color="black") + 
+  theme_pubr(border = TRUE) +
+  scale_color_manual(
+    values = c(
+      "Ctrl_chow" = "#0072B2",
+      "Ctrl_CD" = "#0072B2",
+      "Ctrl_HFD" = "#0072B2",
+      "Hp_chow" = "#E69F00",
+      "Hp_CD" = "#E69F00",
+      "Hp_HFD" = "#E69F00"),
+    breaks = c("Ctrl_chow", "Hp_chow", "Ctrl_CD", "Hp_CD", "Ctrl_HFD", "Hp_HFD"),
+    labels = c(
+      "Ctrl_chow" = expression("Control + chow"),
+      "Ctrl_CD" = expression("Control + CD"),
+      "Ctrl_HFD" = expression("Control + HFD"),
+      "Hp_chow" = expression(italic("H. pylori") * " + chow"),
+      "Hp_CD" = expression(italic("H. pylori") * " + CD"),
+      "Hp_HFD" = expression(italic("H. pylori") * " + HFD"))) +
+  scale_linetype_manual(
+    values = c(
+      "Ctrl_chow" = "dashed",
+      "Ctrl_CD" = "dotted",
+      "Ctrl_HFD" = "solid",
+      "Hp_chow" = "dashed",
+      "Hp_CD" = "dotted",
+      "Hp_HFD" = "solid"),
+    breaks = c("Ctrl_chow", "Hp_chow", "Ctrl_CD", "Hp_CD", "Ctrl_HFD", "Hp_HFD"),
+    labels = c(
+      "Ctrl_chow" = expression("Control + chow"),
+      "Ctrl_CD" = expression("Control + CD"),
+      "Ctrl_HFD" = expression("Control + HFD"),
+      "Hp_chow" = expression(italic("H. pylori") * " + chow"),
+      "Hp_CD" = expression(italic("H. pylori") * " + CD"),
+      "Hp_HFD" = expression(italic("H. pylori") * " + HFD"))) + 
+  facet_grid(~sex) + 
+  scale_x_discrete(breaks = c("-2", "0", "1"), expand = c(0,0)) +
+  theme_bw() + 
+theme(axis.text.x = element_text(size=12), 
+        axis.title.y = element_text(size = 12), 
+        axis.title.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 12), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.key.height = unit(0.5, 'cm'),  # Adjust the height
+        legend.key.width = unit(1, 'cm'),
+        legend.background = element_rect(color = "black", size = 0.5),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        strip.background = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.spacing = unit(1, "lines")) 
+plot_physeq_ST_fecal_mean_bray_pcoa2_1
+
+# Step 2: Add the first geom_line
+plot_physeq_ST_fecal_mean_bray_pcoa2_2 <- plot_physeq_ST_fecal_mean_bray_pcoa2_1 + 
+  geom_line(data=physeq_ST_fecal_bray_coords_df, 
+            aes(x=weeks_on_diet_factor, y=PCoA2, color=treatment_diet_new, group=mouseID), 
+            alpha=0.3, size=0.5, show.legend = FALSE) + 
+  geom_vline(xintercept = 0, linetype = "solid", color="black")
+
+# Display the final plot
+plot_physeq_ST_fecal_mean_bray_pcoa2_2
+```
+
+```{r ST permanova analysis of fecal samples}
+# Convert sample data from phyloseq object to a data frame
+physeq_ST_fecal_sampledata <- as(sample_data(physeq_ST_fecal), "data.frame")
+
+physeq_ST_fecal_sampledata <- physeq_ST_fecal_sampledata %>% 
+  select(-diet) %>% 
+    dplyr::rename(
+    "diet" = "diet_new") 
+
+# Set up permutation scheme
+# 'strata' ensures permutations are done within levels of 'mouseID'
+# 'nperm' specifies the number of permutations (999 in this case)
+h <- how(plots = Plots(strata = physeq_ST_fecal_sampledata$mouseID, type = "none"),
+         nperm = 999)
+
+# Calculate Bray-Curtis distance matrix for the phyloseq object
+df <- phyloseq::distance(physeq_ST_fecal, method = "bray")
+
+# Perform PERMANOVA (Permutational MuSTivariate Analysis of Variance)
+# 'df' is the distance matrix
+# 'treatment*diet*sex' specifies the model with interaction terms
+# 'data' is the sample data frame
+# 'perm' is the permutation scheme
+# 'by = "terms"' tests each term (main effects and interactions) separately
+physeq_ST_fecal_bray_permanova <- adonis2(df ~ treatment * diet * sex,
+                                          data = physeq_ST_fecal_sampledata,
+                                          perm = h,
+                                          by = "terms")
+
+# Print the results of the PERMANOVA
+physeq_ST_fecal_bray_permanova
+```
+
+```{r ST permanova results summary table}
+# Convert PERMANOVA results to a tidy data frame
+physeq_ST_fecal_bray_permanova_table <- tidy(physeq_ST_fecal_bray_permanova)
+
+# Display the tidy data frame
+physeq_ST_fecal_bray_permanova_table
+
+# Rename columns for better readability
+physeq_ST_fecal_bray_permanova_table_new <- physeq_ST_fecal_bray_permanova_table %>%
+  dplyr::rename(
+    "Term" = "term", 
+    "Sum of Squares" = "SumOfSqs", 
+    "Statistic" = "statistic", 
+    "P value" = "p.value"
+  )
+
+# Round numeric columns to 3 decimal places
+physeq_ST_fecal_bray_permanova_table_new <- physeq_ST_fecal_bray_permanova_table_new %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+# Create a ggtexttable for the PERMANOVA results
+physeq_ST_fecal_bray_permanova_table_plot <- ggtexttable(physeq_ST_fecal_bray_permanova_table_new, rows = NULL, theme = ttheme("blank")) %>%
+  tab_add_hline(at.row = 1:2, row.side = "top", linewidth = 2) %>%
+  tab_add_hline(at.row = 8, row.side = "bottom", linewidth = 2, linetype = 1) %>%
+  tab_add_hline(at.row = 10, row.side = "bottom", linewidth = 2, linetype = 1)
+
+# Display the ggtexttable
+physeq_ST_fecal_bray_permanova_table_plot
+
+```
+
+```{r ST: prepare beta diversity figure for supplementary materials}
+# Combine PCoA1 and PCoA2 plots side by side
+combined_plots_physeq_ST_fecal_mean_pcoa1_pcoa2 <- ggarrange(
+  plot_physeq_ST_fecal_mean_bray_pcoa1_2, 
+  plot_physeq_ST_fecal_mean_bray_pcoa2_2, 
+  ncol = 2, 
+  nrow = 1, 
+  labels = c("C", "D"),  
+  align = "h", 
+  common.legend = TRUE, 
+  legend = "bottom"
+)
+
+# Combine all plots into a single figure
+MS1_FigS10 <- ggarrange(
+  plot_physeq_ST_fecal_betadiv, 
+  physeq_ST_fecal_bray_permanova_table_plot, 
+  combined_plots_physeq_ST_fecal_mean_pcoa1_pcoa2, 
+  nrow = 3, 
+  labels = c("A", "B", ""),  
+  align = "v", 
+  common.legend = FALSE
+)
+
+# Display the combined figure
+MS1_FigS10
+
+# Add extra space under the legend
+MS1_FigS10 <- annotate_figure(
+  MS1_FigS10,
+  bottom = text_grob(" ", vjust = 1.5)  # Adjust vjust to add space
+)
+
+# save figure 
+#ggsave("25.03.10_MS1_ST_beta_diversity.jpeg", plot = MS1_FigS10, device = "jpeg", path = ("supplementary"), units="cm",  width=20, height=30, dpi=300)
+```
+
+### GIT samples
+```{r ST: prepara physeq object for gastrointestinal (GIT) samples}
+# Subset samples to include only GIT samples and non-NA treatments
+physeq_ST_git <- physeq_ST_trans_abund_subset  %>%
+  subset_samples(!is.na(treatment)) %>%
+  subset_samples(timepoint == "t4")
+```
+
+```{r ST: plot beta diversity for colonic samples}
+# Subset samples to include only colon samples
+physeq_ST_colon <- subset_samples(physeq_ST_git, sample_type == "colon")
+
+# Perform PCoA ordination using Bray-Curtis distance
+physeq_ST_colon_bray <- ordinate(physeq_ST_colon, method = "PCoA", distance = "bray")
+
+# Rename PCoA axes
+colnames(physeq_ST_colon_bray$vectors)[1:2] <- c("PCoA1", "PCoA2")
+
+# Plot ordination
+plot_physeq_ST_colon_bray <- plot_ordination(physeq_ST_colon, physeq_ST_colon_bray, type = "samples", color = "treatment") +
+  facet_grid(sex~diet_new) + 
+  #facet_nested(~sex+diet_new, nest_line = element_line(linetype = 1)) + 
+  #scale_x_continuous(limits = c(-1.2, 1.2), breaks = c(-1, -0.5, 0, 0.5, 1)) + 
+  #scale_y_continuous(limits = c(-1.2, 1.2), breaks = c(-1, -0.5, 0, 0.5, 1)) + 
+  #stat_ellipse(type = "norm", alpha = 0.5, show.legend = FALSE) +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) + 
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) + 
+  ggtitle("COLON") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "none", 
+        legend.title = element_blank(), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines"), 
+        panel.spacing.y = unit(1, "lines")) + 
+  guides(color = guide_legend(override.aes = list(size = 5))) 
+
+# Display the plot
+plot_physeq_ST_colon_bray
+```
+
+```{r ST: permanova analysis of colonic samples}
+# Convert sample data from phyloseq object to a data frame
+physeq_ST_colon_sampledata <- as(sample_data(physeq_ST_colon), "data.frame")
+
+# Perform PERMANOVA (Permutational MuSTivariate Analysis of Variance)
+# Using Bray-Curtis distance matrix
+physeq_ST_colon_permanova <- adonis2(
+  phyloseq::distance(physeq_ST_colon, method = "bray") ~ treatment * diet * sex,
+  data = physeq_ST_colon_sampledata,
+  permutations = 999
+)
+
+# Display the PERMANOVA resuSTs
+physeq_ST_colon_permanova
+```
+
+```{r ST: summary table of permanova analysis of colonic samples}
+# Convert PERMANOVA resuSTs to a tidy data frame
+physeq_ST_colon_permanova_table <- tidy(physeq_ST_colon_permanova)
+
+# Display the tidy data frame
+physeq_ST_colon_permanova_table
+
+# Rename columns for better readability
+physeq_ST_colon_permanova_table_new <- physeq_ST_colon_permanova_table %>%
+  dplyr::rename(
+    "Term" = "term",
+    "Sum of Squares" = "SumOfSqs",
+    "Statistic" = "statistic",
+    "P value" = "p.value"
+  )
+
+# Round numeric columns to 3 decimal places
+physeq_ST_colon_permanova_table_new <- physeq_ST_colon_permanova_table_new %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+# Create a ggtexttable for the PERMANOVA resuSTs
+physeq_ST_colon_permanova_table_plot <- ggtexttable(
+  physeq_ST_colon_permanova_table_new, 
+  rows = NULL, 
+  theme = ttheme("blank")
+) %>%
+  tab_add_hline(at.row = 1:2, row.side = "top", linewidth = 2) %>%
+  tab_add_hline(at.row = 8, row.side = "bottom", linewidth = 2, linetype = 1) %>%
+  tab_add_hline(at.row = 10, row.side = "bottom", linewidth = 2, linetype = 1)
+
+# Display the ggtexttable
+physeq_ST_colon_permanova_table_plot
+```
+```{r ST: plot beta diversity for ileal samples}
+# Subset samples to include only ileum samples
+physeq_ST_ileum <- subset_samples(physeq_ST_git, sample_type == "ileum")
+
+# Perform PCoA ordination using Bray-Curtis distance
+physeq_ST_ileum_bray <- ordinate(physeq_ST_ileum, method = "PCoA", distance = "bray")
+
+# Rename PCoA axes
+colnames(physeq_ST_ileum_bray$vectors)[1:2] <- c("PCoA1", "PCoA2")
+
+# Plot ordination
+plot_physeq_ST_ileum_bray <- plot_ordination(physeq_ST_ileum, physeq_ST_ileum_bray, type = "samples", color = "treatment") +
+  facet_grid(sex~diet_new) + 
+  #facet_nested(~sex+diet_new, nest_line = element_line(linetype = 1)) + 
+  #scale_x_continuous(limits = c(-1.2, 1.2), breaks = c(-1, -0.5, 0, 0.5, 1)) + 
+  #scale_y_continuous(limits = c(-0.4, 0.6), breaks = c(-0.2, 0, 0.2, 0.4)) + 
+  #stat_ellipse(type = "norm", alpha = 0.5, show.legend = FALSE) +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) + 
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) + 
+  ggtitle("ILEUM") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "none", 
+        legend.title = element_blank(), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines"), 
+        panel.spacing.y = unit(1, "lines")) + 
+  guides(color = guide_legend(override.aes = list(size = 5)))
+
+# Display the plot
+plot_physeq_ST_ileum_bray
+```
+
+```{r ST: permanova analysis of ileal samples}
+# Convert sample data from phyloseq object to a data frame
+physeq_ST_ileum_sampledata <- as(sample_data(physeq_ST_ileum), "data.frame")
+
+# Perform PERMANOVA (Permutational MuSTivariate Analysis of Variance)
+# Using Bray-Curtis distance matrix
+physeq_ST_ileum_permanova <- adonis2(
+  phyloseq::distance(physeq_ST_ileum, method = "bray") ~ treatment * diet * sex,
+  data = physeq_ST_ileum_sampledata,
+  permutations = 999
+)
+
+# Display the PERMANOVA resuSTs
+physeq_ST_ileum_permanova
+```
+
+```{r ST: summary table of permanova analysis of ileal samples}
+# Convert PERMANOVA resuSTs to a tidy data frame
+physeq_ST_ileum_permanova_table <- tidy(physeq_ST_ileum_permanova)
+
+# Display the tidy data frame
+physeq_ST_ileum_permanova_table
+
+# Rename columns for better readability
+physeq_ST_ileum_permanova_table_new <- physeq_ST_ileum_permanova_table %>%
+  dplyr::rename(
+    "Term" = "term",
+    "Sum of Squares" = "SumOfSqs",
+    "Statistic" = "statistic",
+    "P value" = "p.value"
+  )
+
+# Round numeric columns to 3 decimal places
+physeq_ST_ileum_permanova_table_new <- physeq_ST_ileum_permanova_table_new %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+# Create a ggtexttable for the PERMANOVA resuSTs
+physeq_ST_ileum_permanova_table_plot <- ggtexttable(
+  physeq_ST_ileum_permanova_table_new, 
+  rows = NULL, 
+  theme = ttheme("blank")
+) %>%
+  tab_add_hline(at.row = 1:2, row.side = "top", linewidth = 2) %>%
+  tab_add_hline(at.row = 8, row.side = "bottom", linewidth = 2, linetype = 1) %>%
+  tab_add_hline(at.row = 10, row.side = "bottom", linewidth = 2, linetype = 1)
+
+# Display the ggtexttable
+physeq_ST_ileum_permanova_table_plot
+```
+
+```{r ST: plot beta diversity for gastric samples}
+# Subset samples to include only stomach samples
+physeq_ST_stomach <- subset_samples(physeq_ST_git, sample_type == "stomach")
+
+# Perform PCoA ordination using Bray-Curtis distance
+physeq_ST_stomach_bray <- ordinate(physeq_ST_stomach, method = "PCoA", distance = "bray")
+
+# Rename PCoA axes
+colnames(physeq_ST_stomach_bray$vectors)[1:2] <- c("PCoA1", "PCoA2")
+
+# Plot ordination
+plot_physeq_ST_stomach_bray <- plot_ordination(physeq_ST_stomach, physeq_ST_stomach_bray, type = "samples", color = "treatment") +
+  facet_grid(sex~diet_new) + 
+  #facet_nested(~sex+diet_new, nest_line = element_line(linetype = 1)) + 
+  #scale_x_continuous(limits = c(-1.2, 1.2), breaks = c(-1, -0.5, 0, 0.5, 1)) + 
+  #scale_y_continuous(limits = c(-1.2, 1.2), breaks = c(-1, -0.5, 0, 0.5, 1)) + 
+  #stat_ellipse(type = "norm", alpha = 0.5, show.legend = FALSE) +
+  geom_vline(xintercept = 0, linetype = "dashed", alpha = 0.5) + 
+  geom_hline(yintercept = 0, linetype = "dashed", alpha = 0.5) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), labels = c("Control", expression(italic("H. pylori")))) + 
+  ggtitle("STOMACH") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "none", 
+        legend.title = element_blank(), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines"), 
+        panel.spacing.y = unit(1, "lines")) + 
+  guides(color = guide_legend(override.aes = list(size = 5)))
+
+# Display the plot
+plot_physeq_ST_stomach_bray
+```
+
+```{r ST: permanova analysis of gastric samples}
+# Convert sample data from phyloseq object to a data frame
+physeq_ST_stomach_sampledata <- as(sample_data(physeq_ST_stomach), "data.frame")
+
+# Perform PERMANOVA (Permutational MuSTivariate Analysis of Variance)
+# Using Bray-Curtis distance matrix
+physeq_ST_stomach_permanova <- adonis2(
+  phyloseq::distance(physeq_ST_stomach, method = "bray") ~ treatment * diet * sex,
+  data = physeq_ST_stomach_sampledata,
+  permutations = 999
+)
+
+# Display the PERMANOVA resuSTs
+physeq_ST_stomach_permanova
+```
+
+```{r ST: summary table of permanova analysis of gastric samples}
+# Convert PERMANOVA resuSTs to a tidy data frame
+physeq_ST_stomach_permanova_table <- tidy(physeq_ST_stomach_permanova)
+
+# Display the tidy data frame
+physeq_ST_stomach_permanova_table
+
+# Rename columns for better readability
+physeq_ST_stomach_permanova_table_new <- physeq_ST_stomach_permanova_table %>%
+  dplyr::rename(
+    "Term" = "term",
+    "Sum of Squares" = "SumOfSqs",
+    "Statistic" = "statistic",
+    "P value" = "p.value"
+  )
+
+# Round numeric columns to 3 decimal places
+physeq_ST_stomach_permanova_table_new <- physeq_ST_stomach_permanova_table_new %>%
+  mutate(across(where(is.numeric), ~ round(., 3)))
+
+# Create a ggtexttable for the PERMANOVA resuSTs
+physeq_ST_stomach_permanova_table_plot <- ggtexttable(
+  physeq_ST_stomach_permanova_table_new, 
+  rows = NULL, 
+  theme = ttheme("blank")
+) %>%
+  tab_add_hline(at.row = 1:2, row.side = "top", linewidth = 2) %>%
+  tab_add_hline(at.row = 8, row.side = "bottom", linewidth = 2, linetype = 1) %>%
+  tab_add_hline(at.row = 10, row.side = "bottom", linewidth = 2, linetype = 1)
+
+# Display the ggtexttable
+physeq_ST_stomach_permanova_table_plot
+```
+
+```{r ST: combine PCoA plots with PERMANOVA tables}
+# Arrange the plots in a 3x2 grid with common legend at the bottom
+ST_git_beta_div_plots <- ggarrange(
+  plot_physeq_ST_stomach_bray, 
+  physeq_ST_stomach_permanova_table_plot,
+  plot_physeq_ST_ileum_bray, 
+  physeq_ST_ileum_permanova_table_plot,
+  plot_physeq_ST_colon_bray, 
+  physeq_ST_colon_permanova_table_plot,
+  nrow=3,
+  ncol = 2,
+  labels = c("A", "", "B", "", "C", ""),
+  common.legend = TRUE,  # Use a common legend for all plots
+  legend = "bottom"
+)
+
+ST_git_beta_div_plots
+
+#ggsave("25.04.15_MS1_ST_git_beta_diversity.jpeg", plot = ST_git_beta_div_plots, device = "jpeg", path = ("supplementary"), units="cm",  width=25, height=30, dpi=300)
+```
+

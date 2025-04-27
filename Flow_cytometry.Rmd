@@ -1,0 +1,465 @@
+---
+title: "Flow_cytometry"
+author: "Sigri"
+date: "2023-04-26"
+output: html_document
+---
+
+# Load libraries
+```{r message=FALSE, warning=FALSE, paged.print=FALSE, results=hide}
+#####load libraries### 
+library(tidyverse) 
+library(readr) 
+library(readxl)
+library(ggplot2)
+library(ggpubr)
+library(gridExtra)
+library(EnvStats)
+library(scales)
+library(egg)
+library(multcompView)
+library(rstatix)
+library(ggh4x)
+```
+
+# Import data 
+```{r import data}
+MS1_flow_df <- read_xlsx("MS1_flow_merged_results.xlsx", sheet = "final_samplesheet") %>%
+  filter(mouseID!="EO5.8_MR") %>% # something wrong with the WAT weight of this mouse
+  mutate(sex = factor(sex, levels = c("female", "male")))  # Change level order of sex
+```
+
+```{r add Hp loads}
+# Load Hp loads data
+MS1_Hp_loads <- read_xlsx("MS1_Hp_loads.xlsx") %>%
+  select(mouseID, Hp_copies_std) 
+
+# Add Hp loads to dataframe
+MS1_flow_df <- MS1_flow_df %>% 
+  inner_join(MS1_Hp_loads, by = "mouseID")
+
+MS1_flow_df <- MS1_flow_df %>% mutate(Hp_load = ifelse(Hp_copies_std > 1000, "high", "low"))
+
+# # Remove mice with low levels of Hp
+# MS1_flow_df <- MS1_flow_df %>%
+#   mutate(Hp_load = ifelse(is.na(Hp_load) & treatment == "Ctrl", "Ctrl", Hp_load)) %>%
+#   # Remove Hp mice with low bacterial load
+#   filter(Hp_load != "low")
+```
+
+# Macrophages
+```{r ATMs: plot}
+plot_ATMs <- MS1_flow_df %>% 
+  filter(type == "normalized_counts") %>%
+  ggplot(aes(x = treatment, y = log10(F480_CD11b), color = treatment, fill = treatment)) +
+  geom_boxplot(alpha = 0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(height = 0, width = 0.2, size = 2) +
+  labs(y = expression(paste("log"[10], " (F4/80"^"+", phantom("+"), "CD11b"^"+", phantom("+"), "ATMs per g WAT)"))) +
+  theme_pubr(border = TRUE) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"),
+                    labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  facet_nested(~ sex + diet, 
+               nest_line = element_line(linetype = 1)) + 
+  scale_y_continuous(limits = c(3.4, 5.6), breaks = c(3.5, 4, 4.5, 5, 5.5)) +
+  stat_n_text(alpha = 0.75) + 
+  ggtitle("Adipose tissue macrophages (ATMs)") +
+  theme_bw() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 10), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        strip.background = element_blank(), 
+        ggh4x.facet.nestline = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) 
+        
+plot_ATMs
+```
+
+```{r ATMs: perform posthoc test and plot results}
+aov_atms <- function(data) {
+  aov_model <- aov(log10(F480_CD11b) ~ treatment * diet, data = data)
+  summary(aov_model)
+  tukey <- TukeyHSD(aov_model, conf.level = 0.95)
+  tukey_letters <- multcompLetters4(aov_model, tukey)
+  list(aov_model = aov_model, tukey = tukey, tukey_letters = tukey_letters)
+}
+
+aov_atm_females <- aov_atms(MS1_flow_df %>% filter(type=="normalized_counts", sex == "female")) # ns
+aov_atm_males <- aov_atms(MS1_flow_df %>% filter(type=="normalized_counts", sex == "male")) # ns 
+
+```
+
+```{r ATMs: check model assumptions}
+# Check assumptions
+check_assumptions <- function(model) {
+  par(mfrow = c(1, 2))
+  plot(model, 1)  # Residuals vs Fitted
+  plot(model, 2)  # Normal Q-Q
+}
+
+# Run the assumption checks on the model directly
+check_assumptions(aov_atm_females$aov_model)  # Access the model directly
+check_assumptions(aov_atm_males$aov_model)    # For males as well
+
+# Levene's test for homogeneity of variances
+levene_atm <-   MS1_flow_df %>% 
+  filter(type == "normalized_counts") %>%
+  group_by(sex) %>%
+  levene_test(log10(F480_CD11b) ~ treatment * diet)
+
+# Shapiro-Wilk test for normality
+shapiro_atm <-   MS1_flow_df %>% 
+  filter(type == "normalized_counts") %>%
+  mutate(log = log10(F480_CD11b)) %>%
+  group_by(sex) %>%
+  shapiro_test(log)
+
+# Print results
+print(levene_atm) # ns
+print(shapiro_atm) # male sign. 
+```
+# M2 macrophages
+```{r M2: plot data}
+plot_CD301 <- MS1_flow_df %>% 
+  filter(type=="freq_of_parent") %>%
+  ggplot(aes(x = treatment, y = `CD301`, color = treatment, fill = treatment)) +
+  geom_boxplot(alpha = 0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(height = 0, width = 0.2, size = 2) +
+  labs(y = expression("% CD301"^"+"*phantom("+")*"(M2) of ATMs")) + 
+  theme_pubr(border = TRUE) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"),
+                    labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  facet_nested(~ sex + diet, 
+               nest_line = element_line(linetype = 1)) + 
+  scale_y_continuous(limits = c(29, 71), breaks = c(30, 40, 50, 60 , 70)) +
+  stat_n_text(alpha = 0.75, y.pos = 29) + 
+  ggtitle("M2 macrophages") + 
+  theme_bw() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 10), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        strip.background = element_blank(), 
+        ggh4x.facet.nestline = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) 
+plot_CD301
+```
+
+```{r M2: perform posthoc test and plot results}
+aov_m2 <- function(data) {
+  aov_model <- aov(CD301 ~ treatment * diet, data = data)
+  summary(aov_model)
+  tukey <- TukeyHSD(aov_model, conf.level = 0.95)
+  tukey_letters <- multcompLetters4(aov_model, tukey)
+  list(aov_model = aov_model, tukey = tukey, tukey_letters = tukey_letters)
+}
+
+aov_m2_females <- aov_m2(MS1_flow_df %>% filter(type=="freq_of_parent", sex == "female"))
+aov_m2_males <- aov_m2(MS1_flow_df %>% filter(type=="freq_of_parent",sex == "male"))
+
+
+# Extract and combine compact letter display for females
+cld_m2_females <- as.data.frame.list(aov_m2_females$tukey_letters$`treatment:diet`) %>%
+  select(Letters) %>%
+  mutate(sex = "female") %>%
+  rownames_to_column(var = "variable") %>%
+  separate(variable, into = c("treatment", "diet"), sep = ":")
+
+# Extract and combine compact letter display for males
+cld_m2_males <- as.data.frame.list(aov_m2_males$tukey_letters$`treatment:diet`) %>%
+  select(Letters) %>%
+  mutate(sex = "male") %>%
+  rownames_to_column(var = "variable") %>%
+  separate(variable, into = c("treatment", "diet"), sep = ":")
+
+# Combine both data frames
+cld_m2 <- bind_rows(cld_m2_females, cld_m2_males) %>% 
+  mutate(Letters = ifelse(sex == "male", NA, Letters)) # remove letters from males because they did not differ from eachother sign.
+
+# Create the plot with letters
+plot_CD301_posthoc <- plot_CD301 +
+  geom_text(data = cld_m2, aes(x = treatment, y = 70, label = Letters), 
+            size = 5, hjust = 0.5, color = "black", show.legend = FALSE)
+
+# Display the plot
+plot_CD301_posthoc
+
+```
+```{r M2: check model assumptions}
+# Check assumptions
+check_assumptions <- function(model) {
+  par(mfrow = c(1, 2))
+  plot(model, 1)  # Residuals vs Fitted
+  plot(model, 2)  # Normal Q-Q
+}
+
+# Run the assumption checks on the model directly
+check_assumptions(aov_m2_females$aov_model)  # Access the model directly
+check_assumptions(aov_m2_males$aov_model)    # For males as well
+
+# Levene's test for homogeneity of variances
+levene_m2 <-   MS1_flow_df %>% 
+  filter(type == "freq_of_parent") %>%
+  group_by(sex) %>%
+  levene_test(CD301 ~ treatment * diet)
+
+# Shapiro-Wilk test for normality
+shapiro_m2 <-   MS1_flow_df %>% 
+  filter(type == "freq_of_parent") %>%
+  group_by(sex) %>%
+  shapiro_test(CD301)
+
+# Print results
+print(levene_m2) # ns
+print(shapiro_m2) # ns
+```
+
+# M1 macrophages
+```{r M1: plot data}
+plot_CD11c <- MS1_flow_df %>% 
+  filter(type=="freq_of_parent") %>%
+  ggplot(aes(x = treatment, y = `CD11c`, color = treatment, fill = treatment)) +
+  geom_boxplot(alpha = 0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(height = 0, width = 0.2, size = 2) +
+  labs(y = expression("% CD301"^"+"*phantom("+")*"(M1) of ATMs")) + 
+  theme_pubr(border = TRUE) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"),
+                    labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  facet_nested(~ sex + diet, 
+               nest_line = element_line(linetype = 1)) + 
+  scale_y_continuous(limits = c(7, 21), breaks = c(8, 12, 16, 20)) +
+  stat_n_text(alpha = 0.75, y.pos = 7) + 
+  ggtitle("M1 macrophages") + 
+  theme_bw() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 10), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        strip.background = element_blank(), 
+        ggh4x.facet.nestline = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) 
+plot_CD11c
+```
+
+```{r M1: perform posthoc test and plot results}
+aov_m1 <- function(data) {
+  aov_model <- aov(CD11c ~ treatment * diet, data = data)
+  summary(aov_model)
+  tukey <- TukeyHSD(aov_model, conf.level = 0.95)
+  tukey_letters <- multcompLetters4(aov_model, tukey)
+  list(aov_model = aov_model, tukey = tukey, tukey_letters = tukey_letters)
+}
+
+aov_m1_females <- aov_m1(MS1_flow_df %>% filter(type=="freq_of_parent", sex == "female"))
+aov_m1_males <- aov_m1(MS1_flow_df %>% filter(type=="freq_of_parent",sex == "male"))
+
+
+# Extract and combine compact letter display for females
+cld_m1_females <- as.data.frame.list(aov_m1_females$tukey_letters$`treatment:diet`) %>%
+  select(Letters) %>%
+  mutate(sex = "female") %>%
+  rownames_to_column(var = "variable") %>%
+  separate(variable, into = c("treatment", "diet"), sep = ":")
+
+# Extract and combine compact letter display for males
+cld_m1_males <- as.data.frame.list(aov_m1_males$tukey_letters$`treatment:diet`) %>%
+  select(Letters) %>%
+  mutate(sex = "male") %>%
+  rownames_to_column(var = "variable") %>%
+  separate(variable, into = c("treatment", "diet"), sep = ":")
+
+# Combine both data frames
+cld_m1 <- bind_rows(cld_m1_females, cld_m1_males) %>% 
+  mutate(Letters = ifelse(sex == "male", NA, Letters)) # remove letters from males because they did not differ from eachother sign.
+
+# Create the plot with letters
+plot_CD11c_posthoc <- plot_CD11c +
+  geom_text(data = cld_m1, aes(x = treatment, y = 21, label = Letters), 
+            size = 5, hjust = 0.5, color = "black", show.legend = FALSE)
+
+# Display the plot
+plot_CD11c_posthoc
+
+```
+
+```{r M1: check model assumptions}
+# Check assumptions
+check_assumptions <- function(model) {
+  par(mfrow = c(1, 2))
+  plot(model, 1)  # Residuals vs Fitted
+  plot(model, 2)  # Normal Q-Q
+}
+
+# Run the assumption checks on the model directly
+check_assumptions(aov_m1_females$aov_model)  # Access the model directly
+check_assumptions(aov_m1_males$aov_model)    # For males as well
+
+# Levene's test for homogeneity of variances
+levene_m1 <-   MS1_flow_df %>% 
+  filter(type == "freq_of_parent") %>%
+  group_by(sex) %>%
+  levene_test(CD11c ~ treatment * diet)
+
+# Shapiro-Wilk test for normality
+shapiro_m1 <-   MS1_flow_df %>% 
+  filter(type == "freq_of_parent") %>%
+  group_by(sex) %>%
+  shapiro_test(CD11c)
+
+# Print results
+print(levene_m1) # ns
+print(shapiro_m1) # ns
+```
+
+# M1/M2 ratio
+```{r M1/M2: plot data}
+plot_ratio <- MS1_flow_df %>% 
+  filter(type=="counts") %>%
+  mutate(ratio = (CD11c/CD301)) %>%
+  ggplot(aes(x = treatment, y = `ratio`, color = treatment, fill = treatment)) +
+  geom_boxplot(alpha = 0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(height = 0, width = 0.2, size = 2) +
+  labs(y = "M1/M2 ratio") + 
+  theme_pubr(border = TRUE) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"),
+                    labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  facet_nested(~ sex + diet, 
+               nest_line = element_line(linetype = 1)) + 
+  scale_y_continuous(limits = c(0.1, 0.6), breaks = c(0.1, 0.2, 0.3, 0.4, 0.5, 0.6)) +
+  stat_n_text(alpha = 0.75, y.pos = 0.1) + 
+  ggtitle("M1/M2 ratio") + 
+  theme_bw() +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 10), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        strip.background = element_blank(), 
+        ggh4x.facet.nestline = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) 
+plot_ratio
+```
+
+```{r M1/M2: perform posthoc test and plot results}
+aov_ratio <- function(data) {
+  aov_model <- aov(CD11c/CD301 ~ treatment * diet, data = data)
+  summary(aov_model)
+  tukey <- TukeyHSD(aov_model, conf.level = 0.95)
+  tukey_letters <- multcompLetters4(aov_model, tukey)
+  list(aov_model = aov_model, tukey = tukey, tukey_letters = tukey_letters)
+}
+
+aov_ratio_females <- aov_ratio(MS1_flow_df %>% filter(type=="counts", sex == "female")) # ns
+aov_ratio_males <- aov_ratio(MS1_flow_df %>% filter(type=="counts", sex == "male")) # ns 
+
+```
+
+```{r M1/M2: check model assumptions}
+# Check assumptions
+check_assumptions <- function(model) {
+  par(mfrow = c(1, 2))
+  plot(model, 1)  # Residuals vs Fitted
+  plot(model, 2)  # Normal Q-Q
+}
+
+# Run the assumption checks on the model directly
+check_assumptions(aov_ratio_females$aov_model)  # Access the model directly
+check_assumptions(aov_ratio_males$aov_model)    # For males as well
+
+# Levene's test for homogeneity of variances
+levene_ratio <-   MS1_flow_df %>% 
+  filter(type == "counts") %>%
+  mutate(ratio = (CD11c/CD301)) %>%
+  group_by(sex) %>%
+  levene_test(ratio ~ treatment * diet)
+
+# Shapiro-Wilk test for normality
+shapiro_ratio <-   MS1_flow_df %>% 
+  filter(type == "counts") %>%
+  mutate(ratio = (CD11c/CD301)) %>%
+  group_by(sex) %>%
+  shapiro_test(ratio)
+
+# Print results
+print(levene_ratio) # ns
+print(shapiro_ratio) # females sign. 
+```
+# Prepare figure for Manuscript
+```{r plot supplementary figure}
+MS1_FigureS3 <- ggpubr::ggarrange(
+  plot_ATMs, 
+  plot_CD11c_posthoc, 
+  plot_CD301_posthoc, 
+  plot_ratio,
+  nrow = 2, 
+  ncol = 2,
+  align = "hv",
+  labels = c("A", "B", "C", "D"), 
+  common.legend = TRUE,
+  legend = "bottom"
+  )
+MS1_FigureS3
+
+# save plot
+ggsave("24.11.05_MS1_FigureS3.png", plot = MS1_FigureS3, device = "png", path = ("supplementary"), units="cm", width=21, height=20, dpi=300)
+```
+

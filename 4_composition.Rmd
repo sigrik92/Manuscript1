@@ -1,0 +1,2939 @@
+---
+title: "MS1_composition"
+author: "Sigri"
+date: "2024-06-12"
+output: html_document
+---
+
+# Load libraries 
+```{r libraries, message=FALSE, warning=FALSE, paged.print=FALSE, results="hide"}
+### Load required packages
+library(ggplot2)
+library(phyloseq)
+library(readxl)
+library(vegan)
+library(ggpubr)
+library(tidyverse)
+library(EnvStats)
+library(rstatix)
+library(ggbeeswarm)
+library(effects)
+library(modelsummary)
+library(speedyseq)
+library(fantaxtic)
+library(ggh4x)
+library(sjPlot)
+library(ggpmisc)
+```
+
+# Load phyloseq objects
+```{r load phyloseq objects}
+# Load the phyloseq object for the long-term experiment (LT)
+physeq_LT_comp <- readRDS("LT_physeq_trans_pruned_0.001.rds") %>%
+  subset_samples(!is.na(treatment)) %>%
+  mutate_tax_table(Phylum = if_else(Phylum == "Firmicutes", "Bacillota", Phylum),
+                   Phylum = if_else(Phylum == "Proteobacteria", "Pseudomonadota", Phylum),
+                   Phylum = if_else(Phylum == "Actinobacteria", "Actinomycetota", Phylum))
+
+physeq_LT_comp <- physeq_LT_comp  %>% mutate_sample_data(seqSampleID = sample_names(physeq_LT_comp))
+
+# Load the phyloseq object for the short-term experiment (ST)
+physeq_ST_comp <- readRDS("ST_physeq_trans_pruned_0.001.rds") %>%
+  subset_samples(!is.na(treatment)) %>%
+  mutate_tax_table(Phylum = if_else(Phylum == "Firmicutes", "Bacillota", Phylum),
+                   Phylum = if_else(Phylum == "Proteobacteria", "Pseudomonadota", Phylum),
+                   Phylum = if_else(Phylum == "Actinobacteria", "Actinomycetota", Phylum))
+
+physeq_ST_comp <- physeq_ST_comp  %>% mutate_sample_data(seqSampleID = sample_names(physeq_ST_comp))
+```
+
+# Long-term
+## Fecal bacterial composition
+```{r LT: prepare fecal phyloseq object}
+physeq_LT_comp_fecal <- physeq_LT_comp %>% 
+  subset_samples(timepoint!="t10") %>%
+  mutate_tax_table(Family = ifelse(Family == "[Eubacterium] coprostanoligenes group", "Eub. coprostanoligenes gr.", Family))
+
+# check if there is contaminations of Helicobacteraceae 
+physeq_LT_comp_fecal %>% psmelt () %>%
+  filter(Family == "Helicobacteraceae") %>% 
+  filter(Abundance > 0) %>%
+  group_by(seqSampleID, treatment) %>%
+  summarize(total_abundance = sum(Abundance)) %>%
+  mutate(percentage = total_abundance*100)
+
+# EO4.11.FN.t2	(Hp) week 0	Helicobacteraceae_Abundance = 0.2026705 % 
+
+physeq_LT_comp_fecal_fam_df <- phyloseq::tax_glom(physeq_LT_comp_fecal, taxrank = "Family") %>% 
+  psmelt() %>%
+  mutate(pseudocount = min(Abundance[Abundance > 0]) / 2) %>%  # Calculate pseudocount
+  mutate(Abundance_pseudocount = Abundance + pseudocount) %>% 
+  select(-pseudocount) %>% 
+  mutate(abund_log10 = log10(Abundance_pseudocount)) 
+```
+
+
+
+
+```{r LT: plot relative abundance of top 10 fecal families}
+# Get the most abundant phyla and the most abundant families within those phyla
+physeq_LT_comp_fecal_top10_families <- top_taxa(
+  physeq_LT_comp_fecal,
+  tax_level = "Family",
+  n_taxa = 10,
+  by_proportion = FALSE)
+
+physeq_LT_comp_fecal_top10_families_females <- subset_samples(physeq_LT_comp_fecal_top10_families$ps_obj, sex == "female")
+physeq_LT_comp_fecal_top10_families_males <- subset_samples(physeq_LT_comp_fecal_top10_families$ps_obj, sex == "male")
+
+plot_physeq_LT_comp_fecal_top10_families_males <- plot_nested_bar(
+  ps_obj = physeq_LT_comp_fecal_top10_families_males,
+  top_level = "Phylum",
+  nested_level = "Family",
+  palette = c(Bacillota = "#00F034",
+              Bacteroidota = "#008CF0",
+              Desulfobacterota = "#ECF000",
+              Verrucomicrobiota = "#CA0BE8")) +
+  labs(x = "Mouse ID", y = "Relative abundance") + 
+  scale_y_continuous(sec.axis = sec_axis(~ ., name = "males")) + 
+  facet_nested(~treatment + weeks_on_diet, 
+                nest_line = element_line(linetype = 1), 
+                scales = "free_x", 
+                space = "free", 
+                labeller = labeller(treatment = c("Ctrl" = "Control", "Hp" = "italic('H. pylori')"),
+                                    weeks_on_diet = c("-1" = "'-1w'", "0" = "'0w'", "1" = "'1w'", "3" = "'3w'", "5" = "'5w'", "11" = "'11w'", "16" = "'16w'"),
+                                    .default = label_parsed)) +
+  theme(text = element_text(size = 16),
+        #axis.title.x = element_text(size = 14),
+        #axis.title.y = element_text(size = 14),
+        axis.text.x = element_blank(), 
+        #axis.text.y = element_text(size=14), 
+        axis.text.y.right = element_blank(), 
+        axis.ticks.y.right = element_blank(),
+        #axis.title.y.right = element_text(size = 16),
+        axis.ticks.x = element_blank(),
+        strip.background.x = element_rect(fill="white"), 
+        strip.text.x = element_text(color="black", size = 16), 
+        legend.position = "none", 
+        legend.title = element_blank(),
+        panel.spacing = unit(0.75, "lines"),
+        panel.border = element_rect(color = "white", fill = NA, size = 0.5)
+        )
+
+plot_physeq_LT_comp_fecal_top10_families_males
+
+plot_physeq_LT_comp_fecal_top10_families_females <- plot_nested_bar(
+  ps_obj = physeq_LT_comp_fecal_top10_families_females,
+  top_level = "Phylum",
+  nested_level = "Family",
+  palette = c(Bacillota = "#00F034",
+              Bacteroidota = "#008CF0",
+              Desulfobacterota = "#ECF000",
+              Verrucomicrobiota = "#CA0BE8")) +
+  labs(x = "Mouse ID", y = "Relative abundance") + 
+  scale_y_continuous(sec.axis = sec_axis(~ ., name = "females")) + 
+  facet_nested(~treatment + weeks_on_diet, 
+                nest_line = element_line(linetype = 1), 
+                scales = "free_x", 
+                space = "free", 
+                labeller = labeller(treatment = c("Ctrl" = "Control", "Hp" = "italic('H. pylori')"),
+                                    weeks_on_diet = c("-1" = "'-1w'", "0" = "'0w'", "1" = "'1w'", "3" = "'3w'", "5" = "'5w'", "11" = "'11w'", "16" = "'16w'"),
+                                    .default = label_parsed)) + 
+  theme(text = element_text(size = 16),
+        #axis.title.x = element_text(size = 14),
+        #axis.title.y = element_text(size = 14),
+        axis.text.x = element_blank(), 
+        #axis.text.y = element_text(size=14), 
+        axis.text.y.right = element_blank(), 
+        axis.ticks.y.right = element_blank(),
+        #axis.title.y.right = element_text(size = 16),
+        axis.ticks.x = element_blank(),
+        strip.background.x = element_rect(fill="white"), 
+        strip.text.x = element_text(color="black", size = 16), 
+        legend.position = "none", 
+        legend.title = element_blank(),
+        panel.spacing = unit(0.75, "lines"),
+        panel.border = element_rect(color = "white", fill = NA, size = 0.5)
+        )
+
+plot_physeq_LT_comp_fecal_top10_families_females
+
+```
+
+```{r LT final fecal plot}
+plot_physeq_LT_comp_fecal_top10_families <- ggpubr::ggarrange(
+  plot_physeq_LT_comp_fecal_top10_families_females, 
+  plot_physeq_LT_comp_fecal_top10_families_males, 
+                          nrow=2, 
+                          labels = c("A", ""),  
+                          align ="h", 
+                          common.legend = TRUE, 
+                          legend = "right"
+                          )
+plot_physeq_LT_comp_fecal_top10_families
+
+# Plot the figure
+#ggsave("24.12.04_MS1_Fig8A.jpeg", plot = plot_physeq_LT_comp_fecal_top10_families, device = "jpeg", path = ("figures"), units="cm",  width=40, height=25, dpi=300)
+```
+
+```{r LT: run a loop of linear mixed effects model of top 10 fecal families}
+# create a dataframe with the relative abundance of the top 10 families and add a pseudo count to avoid log(0)
+physeq_LT_comp_fecal_top10_families_df <- psmelt(physeq_LT_comp_fecal_top10_families$ps_obj) 
+
+# Get list of the top 10 families
+physeq_LT_comp_fecal_top10_families_list <- unique(physeq_LT_comp_fecal_top10_families_df$Family)[unique(physeq_LT_comp_fecal_top10_families_df$Family) != "Other"]
+
+# Create an empty list to store the models
+models <- list()
+
+# Loop over the bacterial families
+for (family in physeq_LT_comp_fecal_top10_families_list) {
+  # Print the name of the family
+  print(paste("Family:", family))
+  
+  # Subset the data for the current family
+  data_subset <- physeq_LT_comp_fecal_fam_df[physeq_LT_comp_fecal_fam_df$Family == family, ]
+  
+  # Fit the model
+  model <- lmerTest::lmer(formula = abund_log10 ~ treatment + diet + sex + (1|mouseID), data = data_subset)
+  
+  # Print the summary
+  print(summary(model))
+  
+  # Save the model in the list with the family name as the key
+  models[[family]] <- model
+}
+
+
+# the three families where Hp has a sign. effect on rel. abundance:
+print(summary(models$Akkermansiaceae))
+print(summary(models$Bacteroidaceae)) # almost significant... 
+print(summary(models$Erysipelotrichaceae))
+```
+```{r LT: time trajectory of Erysipelotrichaceae in fecal samples}
+physeq_LT_fecal_ery_df <- physeq_LT_comp_fecal_fam_df %>% filter(Family == "Erysipelotrichaceae")
+
+
+physeq_LT_fecal_ery_pre_diet <- physeq_LT_fecal_ery_df %>% 
+  filter(weeks_on_diet >= -1 & weeks_on_diet <= 0) %>% 
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(mean_abund_log10 = mean(abund_log10), 
+            SD_abund_log10 = sd(abund_log10))
+
+physeq_LT_fecal_ery_post_diet <- physeq_LT_fecal_ery_df %>% 
+  filter(weeks_on_diet >= 0) %>% 
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(mean_abund_log10 = mean(abund_log10), 
+            SD_abund_log10 = sd(abund_log10)) %>%
+  mutate(treatment_diet = case_when(
+    treatment_diet == "Ctrl_chow" & weeks_on_diet == 0 & sex == "female" ~ "Ctrl_HFD",
+    treatment_diet == "Ctrl_chow" & weeks_on_diet == 0 & sex == "male" ~ "Ctrl_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet== 0 & sex == "female" ~ "Hp_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet== 0 & sex == "male" ~ "Hp_HFD",
+    TRUE ~ treatment_diet
+  ))
+
+physeq_LT_fecal_ery_pre_diet$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_ery_pre_diet$weeks_on_diet)
+physeq_LT_fecal_ery_post_diet$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_ery_post_diet$weeks_on_diet)
+physeq_LT_fecal_ery_df$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_ery_df$weeks_on_diet)
+
+# calculate sample sizes 
+sample_sizes <- physeq_LT_fecal_ery_df %>%
+  filter(weeks_on_diet == 16) %>%
+  group_by(sex, treatment_diet, weeks_on_diet) %>%
+  count()
+
+plot_physeq_LT_fecal_ery <- ggplot() + 
+  geom_line(data=physeq_LT_fecal_ery_df, aes(x=weeks_on_diet_factor,y=abund_log10,color=treatment_diet, group=mouseID), alpha=0.3, size=0.5) + 
+  geom_line(data = physeq_LT_fecal_ery_pre_diet, aes(x=weeks_on_diet_factor, y=mean_abund_log10, group=treatment_diet, color=treatment_diet, linetype=treatment_diet), size=1) +
+  geom_line(data = physeq_LT_fecal_ery_post_diet, aes(x=weeks_on_diet_factor, y=mean_abund_log10, group=treatment_diet, color=treatment_diet, linetype = treatment_diet), size=1) +
+  geom_vline(xintercept = "0", linetype = "solid", color="black") + 
+  labs(x = "Time on diet (weeks)", y = expression(paste("log"[10],"(Relative abundance)"))) + 
+  theme_pubr(border = TRUE) +
+  scale_color_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "#0072B2",
+      "Ctrl_HFD" = "#0072B2",
+      "Hp_chow" = "#E69F00",
+      "Hp_HFD" = "#E69F00")) +
+  scale_linetype_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "solid",
+      "Ctrl_HFD" = "dashed",
+      "Hp_chow" = "solid",
+      "Hp_HFD" = "dashed")) + 
+  facet_grid(~sex) + 
+  scale_x_discrete(breaks = c("-1", "0", "1", "3", "5", "11", "16"), expand = c(0,0)) +
+  ggtitle("Erysipelotrichaceae") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(size=12, color="black"), 
+        axis.title.y = element_text(size = 16), 
+        axis.title.x = element_text(size = 14), 
+        axis.text.y = element_text(size = 14, color="black"), 
+        strip.text.x = element_text(size = 14), 
+        strip.text.y = element_text(size = 14), 
+        legend.position = "bottom", ,
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 14), 
+        legend.key.height = unit(0.5, 'cm'),  # Adjust the height
+        legend.key.width = unit(1, 'cm'),
+        legend.background = element_rect(color = "black", size = 0.5),
+        plot.title = element_text(hjust = 0.5, size = 16, face = "bold"), 
+        strip.background = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        plot.margin = unit(c(0.1, 0.5, 0.1, 0.1), "cm"),  # top, right, bottom, and left sides 
+        panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))
+plot_physeq_LT_fecal_ery
+
+### save plot
+#ggsave("23.02.21_akker_violin.png", plot = akker_box, device = "png", path = ("composition"), units="cm", width=25, height=15, dpi=300)
+```
+
+```{r LT: LMM Erysipelotrichaceae}
+physeq_LT_fecal_ery_post_diet_LMM <- physeq_LT_fecal_ery_df %>% filter(weeks_on_diet > 0)
+
+physeq_LT_fecal_erysip_LMM <- lmerTest::lmer(abund_log10 ~ treatment + sex + (1|mouseID), data = physeq_LT_fecal_ery_post_diet_LMM, REML = TRUE)
+summary(physeq_LT_fecal_erysip_LMM)
+```
+
+```{r LT: time trajectory of Akkermansiaceae in fecal samples}
+physeq_LT_fecal_akker_df <- physeq_LT_comp_fecal_fam_df %>% filter(Family == "Akkermansiaceae")
+
+physeq_LT_fecal_akker_pre_diet <- physeq_LT_fecal_akker_df %>% 
+  filter(weeks_on_diet >= -1 & weeks_on_diet <= 0) %>% 
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(mean_abund_log10 = mean(abund_log10), 
+            SD_abund_log10 = sd(abund_log10))
+
+physeq_LT_fecal_akker_post_diet <- physeq_LT_fecal_akker_df %>% 
+  filter(weeks_on_diet >= 0) %>% 
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(mean_abund_log10 = mean(abund_log10), 
+            SD_abund_log10 = sd(abund_log10)) %>%
+  mutate(treatment_diet = case_when(
+    treatment_diet == "Ctrl_chow" & weeks_on_diet == 0 & sex == "female" ~ "Ctrl_HFD",
+    treatment_diet == "Ctrl_chow" & weeks_on_diet == 0 & sex == "male" ~ "Ctrl_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet== 0 & sex == "female" ~ "Hp_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet== 0 & sex == "male" ~ "Hp_HFD",
+    TRUE ~ treatment_diet
+  ))
+
+physeq_LT_fecal_akker_pre_diet$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_akker_pre_diet$weeks_on_diet)
+physeq_LT_fecal_akker_post_diet$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_akker_post_diet$weeks_on_diet)
+physeq_LT_fecal_akker_df$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_akker_df$weeks_on_diet)
+
+plot_physeq_LT_fecal_akker <- ggplot() + 
+  geom_line(data=physeq_LT_fecal_akker_df, aes(x=weeks_on_diet_factor,y=abund_log10,color=treatment_diet, group=mouseID), alpha=0.3, size=0.5) + 
+  geom_line(data = physeq_LT_fecal_akker_pre_diet, aes(x=weeks_on_diet_factor, y=mean_abund_log10, group=treatment_diet, color=treatment_diet, linetype=treatment_diet), size=1) +
+  geom_line(data = physeq_LT_fecal_akker_post_diet, aes(x=weeks_on_diet_factor, y=mean_abund_log10, group=treatment_diet, color=treatment_diet, linetype = treatment_diet), size=1) +
+  geom_vline(xintercept = "0", linetype = "solid", color="black") + 
+  labs(x = "Time on diet (weeks)", y = expression(paste("log"[10],"(Relative abundance)"))) + 
+  theme_pubr(border = TRUE) +
+  scale_color_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "#0072B2",
+      "Ctrl_HFD" = "#0072B2",
+      "Hp_chow" = "#E69F00",
+      "Hp_HFD" = "#E69F00")) +
+  scale_linetype_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "dashed",
+      "Ctrl_HFD" = "solid",
+      "Hp_chow" = "dashed",
+      "Hp_HFD" = "solid")) + 
+  facet_grid(~sex) + 
+  scale_x_discrete(breaks = c("-1", "0", "1", "3", "5", "11", "16"), expand = c(0,0)) +
+  ggtitle("Akkermansiaceae") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(size=12, color="black"), 
+        axis.title.y = element_text(size = 16), 
+        axis.title.x = element_text(size = 14), 
+        axis.text.y = element_text(size = 14, color="black"), 
+        strip.text.x = element_text(size = 14), 
+        strip.text.y = element_text(size = 14), 
+        legend.position = "bottom", ,
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 14), 
+        legend.key.height = unit(0.5, 'cm'),  # Adjust the height
+        legend.key.width = unit(1, 'cm'),
+        legend.background = element_rect(color = "black", size = 0.5),
+        plot.title = element_text(hjust = 0.5, size = 16, face = "bold"), 
+        strip.background = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        plot.margin = unit(c(0.1, 0.5, 0.1, 0.1), "cm"),  # top, right, bottom, and left sides 
+        panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))
+plot_physeq_LT_fecal_akker
+```
+
+```{r LT: check cage and litter effects on akkermansia}
+library(RColorBrewer)
+my_palette <- brewer.pal(12, "Paired")
+
+plot_physeq_LT_fecal_akker_litter_cage <- ggplot(physeq_LT_fecal_akker_df, aes(x=weeks_on_diet_factor, y=abund_log10, color=as.factor(litter))) + 
+  geom_line(aes(group=mouseID), size=0.5, alpha = 0.5) + 
+  geom_jitter(position = position_jitter(width = 0.2), size = 2) +
+  geom_vline(xintercept = "0", linetype = "solid", color="black") + 
+  labs(x = "Time on diet (weeks)", y = expression(paste("log"[10],"(Relative abundance)"))) + 
+  theme_pubr(border = TRUE) +
+  facet_wrap(cage ~ treatment + sex) + 
+  scale_x_discrete(breaks = c("-1", "0", "1", "3", "5", "11", "16"), expand = c(0,0)) +
+  ggtitle("Akkermansiaceae per litter and cage") + 
+  scale_color_manual(values=my_palette) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(size=12, color="black"), 
+        axis.title.y = element_text(size = 16), 
+        axis.title.x = element_text(size = 14), 
+        axis.text.y = element_text(size = 14, color="black"), 
+        strip.text.x = element_text(size = 14), 
+        strip.text.y = element_text(size = 14), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 14), 
+        legend.key.height = unit(0.5, 'cm'),  # Adjust the height
+        legend.key.width = unit(1, 'cm'),
+        legend.background = element_rect(color = "black", size = 0.5),
+        plot.title = element_text(hjust = 0.5, size = 16, face = "bold"), 
+        strip.background = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        plot.margin = unit(c(0.1, 0.5, 0.1, 0.1), "cm"),  # top, right, bottom, and left sides 
+        panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))
+plot_physeq_LT_fecal_akker_litter_cage
+```
+
+```{r abundance of Akkermansiacea in the dams}
+physeq_LT_dams <- readRDS("LT_physeq_scrub_0.98clustered.rds")  
+
+physeq_LT_dams <- physeq_LT_dams %>%
+  subset_samples(is.na(treatment)) %>%
+  subset_samples(!is.na(sex)) %>% 
+  #mutate_sample_data(SeqSampleID = rownames(sample_data(physeq_LT_dams))) %>%
+  transform_sample_counts(function(x) x / sum(x))
+
+physeq_LT_dams %>% psmelt () %>%
+  filter(Family == "Akkermansiaceae") %>% 
+  filter(Abundance > 0) %>%
+  group_by(Sample) %>%
+  summarize(total_abundance = sum(Abundance)) %>%
+  mutate(percentage = total_abundance*100)
+```
+
+
+
+```{r plot Akkermansiaceae abundance according to status of dams}
+physeq_LT_fecal_akker_df <- physeq_LT_fecal_akker_df %>%
+  mutate(akker_status_dam = case_when(
+    litter == "1" ~ "neg",
+    litter == "1a" ~ "pos",
+    litter == "2a" ~ "neg",
+    litter == "3" ~ "neg",
+    litter == "3a" ~ "pos",
+    litter == "4" ~ "neg",
+    litter == "4a" ~ "neg",
+    TRUE ~ NA_character_  # Default case
+  ))
+
+# Shapiro-Wilk test for normality
+shapiro.test(physeq_LT_fecal_akker_df$abund_log10) # not normally distributed
+
+# Q-Q plot for visual inspection
+qqnorm(physeq_LT_fecal_akker_df$abund_log10)
+qqline(physeq_LT_fecal_akker_df$abund_log10, col = "red")
+
+# Convert 'akker_status_dam' to a factor
+physeq_LT_fecal_akker_df$akker_status_dam <- as.factor(physeq_LT_fecal_akker_df$akker_status_dam)
+
+# Perform the t-test
+wilcox.test(Abundance ~ akker_status_dam, data = physeq_LT_fecal_akker_df)
+
+# Create the box plot with jitter
+akker_abund_dams_status <- ggplot(physeq_LT_fecal_akker_df, aes(x = akker_status_dam, y = Abundance)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(aes(color=treatment, shape = sex), width = 0.2, size = 2, alpha = 0.6) +
+  labs(x = expression(italic("Akkermansiaceae") ~ "status of dam at weaning"),
+       y = expression("Relative abundance of" ~ italic("Akkermansiaceae"))) +
+  facet_grid(~weeks_on_diet_factor, 
+             labeller = labeller(weeks_on_diet_factor = c("-1" = "-1w", "0" = "0w", "1" = "1w", "3" = "3w", "5" = "5w", "11" = "11w", "16" = "16w"))) +
+  scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  stat_n_text(size = 3) +
+  theme_bw() + 
+  theme(#axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 12),
+        #axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 10), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "right", 
+        #legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        strip.background = element_blank(), 
+        ggh4x.facet.nestline = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines"))
+akker_abund_dams_status
+
+# Perform Wilcoxon test and adjust y.position
+wilcox_akker_dams_mum <- physeq_LT_fecal_akker_df %>%
+  group_by(weeks_on_diet_factor) %>%
+  wilcox_test(Abundance ~ akker_status_dam) %>%
+  add_significance() %>%
+  add_xy_position() %>%
+  mutate(y.position = 0.98)
+      
+ # Add significance to the plot
+akker_abund_dams_status_sig <- akker_abund_dams_status + stat_pvalue_manual(wilcox_akker_dams_mum, hide.ns = TRUE)
+akker_abund_dams_status_sig
+
+# Fit the linear mixed model
+akker_breeding_mum_LMM <- lmerTest::lmer(abund_log10 ~ akker_status_dam + sex + treatment + (1 | mouseID), data = physeq_LT_fecal_akker_df, REML = FALSE)
+summary(akker_breeding_mum_LMM)
+
+#ggsave("25.02.18_akkermansia_dams.jpeg", plot = akker_abund_dams_status_sig, device = "jpeg", path = ("supplementary"), units="cm",  width=20, height=12.5, dpi=300)
+
+physeq_LT_fecal_akker_df %>% filter(weeks_on_diet == -1) %>% select(Abundance, litter, akker_status_dam)
+```
+
+```{r LT: Akkermansiaceae prevalence analysis}
+physeq_LT_comp_fecal_akker_df <- physeq_LT_comp_fecal_fam_df %>%
+  filter(Family == "Akkermansiaceae") %>%
+  mutate(akkermansiaceae_presence = ifelse(Abundance > 0, "yes", "no"))
+physeq_LT_comp_fecal_akker_df
+
+physeq_LT_comp_fecal_akker_df <- physeq_LT_comp_fecal_akker_df %>%
+  mutate(
+    treatment = as.factor(treatment),
+    akkermansiaceae_presence = as.factor(akkermansiaceae_presence),
+    diet = as.factor(diet),
+    sex = as.factor(sex)
+  )
+
+contingency_table <- physeq_LT_comp_fecal_akker_df %>%
+  filter(weeks_on_diet == 0) %>%
+  group_by(treatment, akkermansiaceae_presence) %>%
+  summarise(count = n()) %>%
+  pivot_wider(names_from = akkermansiaceae_presence, values_from = count, values_fill = list(count = 0)) %>%
+  rename(akker_no = `no`, akker_yes = `yes`) %>%
+  column_to_rownames(var = "treatment")
+contingency_table
+
+mosaicplot(contingency_table, color = TRUE)
+
+fisher_test_result <- fisher.test(contingency_table)
+fisher_test_result
+```
+
+```{r LT: linear mixed effects model of Akkermansiaceae}
+physeq_LT_fecal_akker_LMM <- lmerTest::lmer(abund_log10 ~ treatment + diet + sex + (1 | mouseID), data = physeq_LT_fecal_akker_df)
+summary(physeq_LT_fecal_akker_LMM)
+
+# Fit the linear mixed model
+physeq_LT_fecal_akker_LMM_alt <- lmerTest::lmer(abund_log10 ~ treatment + diet + sex + akker_status_dam + (1 | mouseID), data = physeq_LT_fecal_akker_df)
+summary(physeq_LT_fecal_akker_LMM_alt)
+## timepoint was not included as random effect, because it led to a singular fit
+## interaction terms were not included, because it did not improve model fit (models compared with ANOVA)
+
+anova(physeq_LT_fecal_akker_LMM, physeq_LT_fecal_akker_LMM_alt)
+
+# Create a dataframe for model coefficients
+physeq_LT_fecal_akker_LMM_df <- modelplot(physeq_LT_fecal_akker_LMM, draw = FALSE) %>%
+  dplyr::slice(-((n() - 1):n())) %>%  # Remove last two rows
+  mutate(p_sign = case_when(
+    p.value > 0.05 ~ "",
+    p.value <= 0.05 & p.value > 0.01 ~ "*",
+    p.value <= 0.01 & p.value > 0.001 ~ "**",
+    p.value <= 0.001 ~ "***"
+  ))
+
+# Plotting
+plot_physeq_LT_fecal_akker_LMM <- ggplot(physeq_LT_fecal_akker_LMM_df, aes(x = term, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.1) +
+  geom_hline(yintercept = 0, linetype = "dashed", size = 0.4) +
+  labs(y = "Coefficient estimates and 95% CI", x = "") +
+  coord_flip() +
+  geom_point(size = 2, fill = "black", colour = "black", shape = 21) +
+  geom_text(aes(label = paste0(sprintf("%.2f", estimate), p_sign)), vjust = -1.25, size = 4) +
+  scale_x_discrete(labels = c("(Intercept)" = "Intercept ",
+                              "treatmentHp" = expression(paste(italic("H. pylori "))),
+                              "sexmale" = "male ",
+                              "dietHFD" = "HFD "),
+                   position = "top") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 14, color = "black"),
+    axis.title.y = element_text(size = 14),
+    axis.title.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14, color = "black"),
+    strip.text.x = element_text(size = 14),
+    strip.text.y = element_text(size = 14),
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, size = 14),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_physeq_LT_fecal_akker_LMM
+
+```
+```{r LT: print LMM results for Akkermansiaceae}
+tab_model(physeq_LT_fecal_akker_LMM,
+                                    show.re.var=TRUE, 
+                                    show.icc=TRUE, 
+                                    show.r2=TRUE,
+                                    ci.hyphen = " ; ", 
+                                    string.ci = "CI (95%)",
+                                    string.p = "P-value",
+                                    dv.labels = c("log10(Akkermansiaceae) ~ treatment + diet + sex + (1|mouseID)")
+)
+```
+
+```{r LT: plot Akkermansiaceae time trajectory and LMM}
+plot_physeq_LT_fecal_akker_combined <- cowplot::plot_grid(
+  plot_physeq_LT_fecal_akker, 
+  plot_physeq_LT_fecal_akker_LMM,
+  rel_widths = c(1,0.7),
+  align = "h", 
+  axis = "bt"
+  )
+plot_physeq_LT_fecal_akker_combined
+
+#ggsave("24.11.29_MS1_LT_akkermansia.png", plot = plot_physeq_LT_fecal_akker_combined, device = "png", path = ("figures"), units="cm",  width=20, height=12.5, dpi=300)
+```
+
+```{r LT: time trajectory of Bacteroidaceae in fecal samples}
+physeq_LT_fecal_bacter_df <- physeq_LT_comp_fecal_fam_df %>% filter(Family == "Bacteroidaceae")
+
+physeq_LT_fecal_bacter_pre_diet <- physeq_LT_fecal_bacter_df %>% 
+  filter(weeks_on_diet >= -1 & weeks_on_diet <= 0) %>% 
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(mean_abund_log10 = mean(abund_log10), 
+            SD_abund_log10 = sd(abund_log10))
+
+physeq_LT_fecal_bacter_post_diet <- physeq_LT_fecal_bacter_df %>% 
+  filter(weeks_on_diet >= 0) %>% 
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(mean_abund_log10 = mean(abund_log10), 
+            SD_abund_log10 = sd(abund_log10)) %>%
+  mutate(treatment_diet = case_when(
+    treatment_diet == "Ctrl_chow" & weeks_on_diet == 0 & sex == "female" ~ "Ctrl_HFD",
+    treatment_diet == "Ctrl_chow" & weeks_on_diet == 0 & sex == "male" ~ "Ctrl_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet== 0 & sex == "female" ~ "Hp_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet== 0 & sex == "male" ~ "Hp_HFD",
+    TRUE ~ treatment_diet
+  ))
+
+physeq_LT_fecal_bacter_pre_diet$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_bacter_pre_diet$weeks_on_diet)
+physeq_LT_fecal_bacter_post_diet$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_bacter_post_diet$weeks_on_diet)
+physeq_LT_fecal_bacter_df$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_bacter_df$weeks_on_diet)
+
+plot_physeq_LT_fecal_bacter <- ggplot() + 
+  geom_line(data=physeq_LT_fecal_bacter_df, aes(x=weeks_on_diet_factor,y=abund_log10,color=treatment_diet, group=mouseID), alpha=0.3, size=0.5) + 
+  geom_line(data = physeq_LT_fecal_bacter_pre_diet, aes(x=weeks_on_diet_factor, y=mean_abund_log10, group=treatment_diet, color=treatment_diet, linetype=treatment_diet), size=1) +
+  geom_line(data = physeq_LT_fecal_bacter_post_diet, aes(x=weeks_on_diet_factor, y=mean_abund_log10, group=treatment_diet, color=treatment_diet, linetype = treatment_diet), size=1) +
+  geom_vline(xintercept = "0", linetype = "solid", color="black") + 
+  labs(x = "Time on diet (weeks)", y = expression(paste("log"[10],"(Relative abundance)"))) + 
+  theme_pubr(border = TRUE) +
+  scale_color_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "#0072B2",
+      "Ctrl_HFD" = "#0072B2",
+      "Hp_chow" = "#E69F00",
+      "Hp_HFD" = "#E69F00")) +
+  scale_linetype_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "dashed",
+      "Ctrl_HFD" = "solid",
+      "Hp_chow" = "dashed",
+      "Hp_HFD" = "solid")) + 
+  facet_grid(~sex) + 
+  scale_x_discrete(breaks = c("-1", "0", "1", "3", "5", "11", "16"), expand = c(0,0)) +
+  ggtitle("Bacteroidaceae") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(size=12, color="black"), 
+        axis.title.y = element_text(size = 16), 
+        axis.title.x = element_text(size = 14), 
+        axis.text.y = element_text(size = 14, color="black"), 
+        strip.text.x = element_text(size = 14), 
+        strip.text.y = element_text(size = 14), 
+        legend.position = "bottom", ,
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 14), 
+        legend.key.height = unit(0.5, 'cm'),  # Adjust the height
+        legend.key.width = unit(1, 'cm'),
+        legend.background = element_rect(color = "black", size = 0.5),
+        plot.title = element_text(hjust = 0.5, size = 16, face = "bold"), 
+        strip.background = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        plot.margin = unit(c(0.1, 0.5, 0.1, 0.1), "cm"),  # top, right, bottom, and left sides 
+        panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))
+plot_physeq_LT_fecal_bacter
+```
+
+
+```{r LT: linear mixed effects model of Bacteroidaceae}
+# Fit the linear mixed model
+physeq_LT_fecal_bacter_LMM <- lmerTest::lmer(abund_log10 ~ treatment + diet + sex + (1 | mouseID), data = physeq_LT_fecal_bacter_df)
+## including timepoint as random factor did not  improve model fit (tested with ANOVA)
+## including interaction terms did not improve model fit (tested with ANOVA)
+
+# Create a dataframe for model coefficients
+physeq_LT_fecal_bacter_LMM_df <- modelplot(physeq_LT_fecal_bacter_LMM, draw = FALSE) %>%
+  dplyr::slice(-((n() - 1):n())) %>%  # Remove last two rows
+  mutate(p_sign = case_when(
+    p.value > 0.05 ~ "",
+    p.value <= 0.05 & p.value > 0.01 ~ "*",
+    p.value <= 0.01 & p.value > 0.001 ~ "**",
+    p.value <= 0.001 ~ "***"
+  ))
+
+# Plotting
+plot_physeq_LT_fecal_bacter_LMM <- ggplot(physeq_LT_fecal_bacter_LMM_df, aes(x = term, y = estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high), width = 0.1) +
+  geom_hline(yintercept = 0, linetype = "dashed", size = 0.4) +
+  labs(y = "Coefficient estimates and 95% CI", x = "") +
+  coord_flip() +
+  geom_point(size = 2, fill = "black", colour = "black", shape = 21) +
+  geom_text(aes(label = paste0(sprintf("%.2f", estimate), p_sign)), vjust = -1.25, size = 4) +
+  scale_x_discrete(labels = c("(Intercept)" = "Intercept ",
+                              "treatmentHp" = expression(paste(italic("H. pylori "))),
+                              "sexmale" = "male ",
+                              "dietHFD" = "HFD "),
+                   position = "top") +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(size = 14, color = "black"),
+    axis.title.y = element_text(size = 14),
+    axis.title.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14, color = "black"),
+    strip.text.x = element_text(size = 14),
+    strip.text.y = element_text(size = 14),
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, size = 14),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.spacing = unit(1, "lines")
+  )
+
+plot_physeq_LT_fecal_bacter_LMM
+
+```
+
+```{r LT: print LMM results for Bacteroidaceae}
+tab_model(physeq_LT_fecal_bacter_LMM,
+                                    show.re.var=TRUE, 
+                                    show.icc=TRUE, 
+                                    show.r2=TRUE,
+                                    ci.hyphen = " ; ", 
+                                    string.ci = "CI (95%)",
+                                    string.p = "P-value",
+                                    dv.labels = c("log10(Bacteroidaceae) ~ treatment + diet + sex + (1|mouseID)")
+)
+```
+
+```{r LT: plot Bacteroidaceae time trajectory and LMM}
+plot_physeq_LT_fecal_bacter_combined <- cowplot::plot_grid(
+  plot_physeq_LT_fecal_bacter, 
+  plot_physeq_LT_fecal_bacter_LMM,
+  rel_widths = c(1,0.7),
+  align = "h", 
+  axis = "bt"
+  )
+plot_physeq_LT_fecal_bacter_combined
+```
+
+```{r LT: combine fecal composition plot and LMM plots}
+plot_physeq_LT_fecal_akker_bacter <- ggarrange(
+  plot_physeq_LT_fecal_akker_combined, 
+  plot_physeq_LT_fecal_bacter_combined,
+  nrow=1,
+  ncol=2, 
+  labels = c("B", "C")
+  )
+plot_physeq_LT_fecal_akker_bacter
+
+MS1_Fig8 <- ggarrange(plot_physeq_LT_comp_fecal_top10_families, 
+                  plot_physeq_LT_fecal_akker_bacter, 
+                  nrow = 2, 
+                  heights = c(1, 0.6))
+MS1_Fig8
+
+#ggsave("25.03.10_MS1_Fig8.jpeg", plot = MS1_Fig8, device = "jpeg", path = ("figures"), units="cm",  width=40, height=40, dpi=300)
+```
+
+
+```{r LT: plot Bacillota/Bacteroidota ratio}
+physeq_LT_fecal_bacillo_bacter_df <- phyloseq::tax_glom(physeq_LT_comp_fecal, taxrank = "Phylum") %>% 
+  psmelt() %>%
+  filter(Phylum %in% c("Bacillota", "Bacteroidota")) %>%
+  filter(Abundance > 0) %>%
+  group_by(mouseID, weeks_on_diet) %>%
+  mutate(BB_ratio = sum(Abundance[Phylum == "Bacillota"]) / sum(Abundance[Phylum == "Bacteroidota"])) %>%
+  distinct(mouseID, .keep_all = TRUE) %>% 
+  mutate(BB_ratio_log10 = log10(BB_ratio)) %>%
+  filter(Sample!="EO4.4.FL.t5") # filter this sample out (had an infinte ratio)
+
+physeq_LT_fecal_BB_pre_diet <- physeq_LT_fecal_bacillo_bacter_df %>% 
+  filter(weeks_on_diet >= -1 & weeks_on_diet <= 0) %>% 
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(mean_BB_ratio_log10 = mean(BB_ratio_log10), 
+            SD_BB_ratio_log10 = sd(BB_ratio_log10))
+
+physeq_LT_fecal_BB_post_diet <- physeq_LT_fecal_bacillo_bacter_df %>% 
+  filter(weeks_on_diet >= 0) %>% 
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(mean_BB_ratio_log10 = mean(BB_ratio_log10), 
+            SD_BB_ratio_log10 = sd(BB_ratio_log10)) %>%
+  mutate(treatment_diet = case_when(
+    treatment_diet == "Ctrl_chow" & weeks_on_diet == 0 & sex == "female" ~ "Ctrl_HFD",
+    treatment_diet == "Ctrl_chow" & weeks_on_diet == 0 & sex == "male" ~ "Ctrl_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet== 0 & sex == "female" ~ "Hp_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet== 0 & sex == "male" ~ "Hp_HFD",
+    TRUE ~ treatment_diet
+  ))
+
+physeq_LT_fecal_BB_pre_diet$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_BB_pre_diet$weeks_on_diet)
+physeq_LT_fecal_BB_post_diet$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_BB_post_diet$weeks_on_diet)
+physeq_LT_fecal_bacillo_bacter_df$weeks_on_diet_factor <- as.factor(physeq_LT_fecal_bacillo_bacter_df$weeks_on_diet)
+
+plot_physeq_LT_fecal_BB_ratio <- ggplot() + 
+  geom_line(data=physeq_LT_fecal_bacillo_bacter_df, aes(x=weeks_on_diet_factor,y=BB_ratio_log10,color=treatment_diet, group=mouseID), alpha=0.3, size=0.5) + 
+  geom_line(data = physeq_LT_fecal_BB_pre_diet, aes(x=weeks_on_diet_factor, y=mean_BB_ratio_log10, group=treatment_diet, color=treatment_diet, linetype=treatment_diet), size=1) +
+  geom_line(data = physeq_LT_fecal_BB_post_diet, aes(x=weeks_on_diet_factor, y=mean_BB_ratio_log10, group=treatment_diet, color=treatment_diet, linetype = treatment_diet), size=1) +
+  geom_vline(xintercept = "0", linetype = "solid", color="black") + 
+  labs(x = "Time on diet (weeks)", y = expression(paste("log"[10],"(Bacillota/Bacteroidota)"))) + 
+  theme_pubr(border = TRUE) +
+  scale_color_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "#0072B2",
+      "Ctrl_HFD" = "#0072B2",
+      "Hp_chow" = "#E69F00",
+      "Hp_HFD" = "#E69F00")) +
+  scale_linetype_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "dashed",
+      "Ctrl_HFD" = "solid",
+      "Hp_chow" = "dashed",
+      "Hp_HFD" = "solid")) + 
+  facet_grid(~sex) + 
+  scale_x_discrete(breaks = c("-1", "0", "1", "3", "5", "11", "16"), expand = c(0,0)) +
+  ggtitle("LONG-TERM") + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(size=10, color="black"), 
+        axis.title.y = element_text(size = 12), 
+        axis.title.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 10, color="black"), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "none", ,
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 10), 
+        legend.key.height = unit(0.5, 'cm'),  # Adjust the height
+        legend.key.width = unit(1, 'cm'),
+        legend.background = element_rect(color = "black", size = 0.5),
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold"), 
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        strip.background = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))
+plot_physeq_LT_fecal_BB_ratio
+```
+
+```{r LT: linear mixed effects model of Bacillota/Bacteroidota ratio}
+# Fit the linear mixed model
+physeq_LT_BB_LMM <- lmerTest::lmer(log10(BB_ratio) ~ treatment + diet + sex + (1 | mouseID), data = physeq_LT_fecal_bacillo_bacter_df)
+summary(physeq_LT_BB_LMM)
+
+# print results as html table format
+tab_model(physeq_LT_BB_LMM,
+                                    show.re.var=TRUE, 
+                                    show.icc=TRUE, 
+                                    show.r2=TRUE,
+                                    ci.hyphen = " ; ", 
+                                    string.ci = "CI (95%)",
+                                    string.p = "P-value",
+                                    dv.labels = c("log10(B/B ratio) ~ treatment + diet + sex + (1|mouseID)")
+)
+```
+
+
+## GIT bacterial composition (LT)
+```{r LT: prepare GIT phyloseq object}
+physeq_LT_comp_git <- physeq_LT_comp %>%
+  subset_samples(timepoint == "t10") %>%
+  mutate_tax_table(Family = ifelse(Family == "[Eubacterium] coprostanoligenes group", 
+                                    "Eub. coprostanoligenes gr.", 
+                                    Family))
+
+physeq_LT_comp_git_fam_df <- phyloseq::tax_glom(physeq_LT_comp_git, taxrank = "Family") %>% 
+  psmelt() %>%
+  mutate(pseudocount = min(Abundance[Abundance > 0]) / 2) %>%  # Calculate pseudocount
+  mutate(Abundance_pseudocount = Abundance + pseudocount) %>% 
+  select(-pseudocount) %>% 
+  mutate(abund_log10 = log10(Abundance_pseudocount)) 
+```
+
+### Stomach samples (LT)
+```{r LT: prepare top 10 families for gastric samples}
+physeq_LT_comp_stomach <- subset_samples(physeq_LT_comp_git, sample_site== "stomach")
+
+# check if there is contaminations of Helicobacteraceae in controls 
+physeq_LT_comp_stomach %>% psmelt () %>% 
+  filter(treatment != "Hp") %>%
+  filter(Family == "Helicobacteraceae") %>% 
+  filter(Abundance > 0) %>%
+  group_by(seqSampleID, treatment) %>%
+  summarize(mean_abundance = mean(Abundance)) %>%
+  mutate(percentage = mean_abundance*100)
+
+# EO4.10.ML.sto	(Ctrl)	Helicobacteraceae_Abundance = 0.07408674 % 
+
+# Get the most abundant phyla and the most abundant families within those phyla
+physeq_LT_comp_stomach_top10_families <- top_taxa(
+  physeq_LT_comp_stomach,
+  tax_level = "Family",
+  n_taxa = 10,
+  by_proportion = FALSE)
+
+# create a dataframe with the relative abundance of the top 10 families and add a pseudo count to avoid log(0)
+physeq_LT_comp_stomach_top10_families_df <- psmelt(physeq_LT_comp_stomach_top10_families$ps_obj) 
+
+# Get list of the top 10 families
+physeq_LT_comp_stomach_top10_families_list <- unique(physeq_LT_comp_stomach_top10_families_df$Family)[unique(physeq_LT_comp_stomach_top10_families_df$Family) != "Other"]
+
+physeq_LT_comp_git_fam_stomach_df <- physeq_LT_comp_git_fam_df %>% filter(sample_site == "stomach") %>% filter(seqSampleID != "EO4.10.ML.sto")
+```
+
+```{r LT: plot top 10 gastric families}
+plot_physeq_LT_comp_stomach_top10_families <- plot_nested_bar(
+  ps_obj = physeq_LT_comp_stomach_top10_families$ps_obj,
+  top_level = "Phylum",
+  nested_level = "Family",
+  palette = c(Bacillota = "#00F034",
+              Bacteroidota = "#008CF0",
+              Campylobacterota = "#E69F00",
+              Desulfobacterota = "#ECF000",
+              Verrucomicrobiota = "#CA0BE8")) +
+  labs(x = "Mouse ID", y = "Relative abundance") + 
+  #ggtitle("STOMACH") +
+  facet_nested(~treatment + sex, 
+                nest_line = element_line(linetype = 1), 
+                scales = "free_x", 
+                space = "free", 
+                labeller = labeller(treatment = c("Ctrl" = "Control", "Hp" = "italic('H. pylori')"),
+                                    .default = label_parsed)) + 
+  theme(axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.text.x = element_blank(), 
+        axis.text.y = element_text(size=12), 
+        axis.ticks.length.x = unit(0.3, "cm"),
+        strip.background.x = element_rect(fill="white"), 
+        strip.text.x = element_text(color="black", size=12), 
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        legend.position = "right", 
+        legend.title = element_blank(),
+        legend.key.size = unit(0.5, "cm"),
+        panel.spacing = unit(0.75, "lines"),
+        panel.border = element_rect(color = "white", fill = NA, size = 0.5)
+        )
+plot_physeq_LT_comp_stomach_top10_families
+```
+
+```{r LT: plot top 10 families (significant) in stomach samples}
+# Create an empty list to store the plots
+plot_list <- list()
+# Create an empty vector to store significant families
+significant_families <- c()
+
+# Iterate over the top 10 families
+for (family in physeq_LT_comp_stomach_top10_families_list[1:10]) {
+  # Subset the data for the current family
+  family_data <- physeq_LT_comp_git_fam_stomach_df %>% filter(Family == family)
+  
+  # Check if there are enough data points for the current family
+  if (nrow(family_data) >= 2) {
+    # Group by sex, diet_new, and weeks_on_diet_factor and perform the Wilcoxon test
+    test_results <- family_data %>%
+      group_by(sex) %>%
+      summarise(p_value = wilcox.test(abund_log10 ~ treatment)$p.value, .groups = 'drop')
+    
+    # Check if any p-value is significant
+    if (any(test_results$p_value < 0.05)) {
+      significant_families <- c(significant_families, family)
+      
+      # Create the plot for the current family
+      plot <- ggplot(family_data, aes(x = treatment, y = abund_log10, color = treatment)) + 
+        geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.5, show.legend = FALSE) +
+        geom_jitter(height = 0, width = 0.2, size = 1) +
+        labs(x = "", y = "Rel. abundance") + 
+        facet_wrap(~sex) +
+        theme_bw() + 
+        scale_y_continuous(limits = c(-5.1, 0.2), breaks = c(-5, -4, -3, -2, -1, 0)) +
+        scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+        scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+        scale_x_discrete(labels = c("Control", expression(italic("H. pylori")))) + 
+        ggtitle(family) + 
+        stat_n_text(size = 4, y.pos = -5) + 
+        theme(
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_text(size = 12, margin = margin(b = 0)),
+          axis.title.x = element_blank(),
+          axis.text.y = element_text(size = 12), 
+          strip.text.x = element_text(size = 12), 
+          strip.text.y = element_text(size = 12), 
+          plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+          legend.position = "bottom", 
+          legend.title = element_blank(), 
+          legend.text = element_text(size = 12), 
+          legend.key.size = unit(0.5, 'cm'), 
+          legend.margin = margin(t = -10),  # Adjust this value as needed
+          strip.background = element_blank(), 
+          panel.grid = element_blank()
+        ) + 
+        guides(color = guide_legend(override.aes = list(size = 3)))
+      
+      # Perform Wilcoxon test and adjust y.position
+      wilcox_test <- family_data %>%
+        group_by(sex) %>%
+        wilcox_test(abund_log10 ~ treatment) %>%
+        add_significance() %>%
+        add_xy_position() %>%
+        mutate(y.position = 0.1)
+      
+      # Add significance to the plot
+      plot <- plot + stat_pvalue_manual(wilcox_test, hide.ns = TRUE, size = 3, tip.length = 0.01)
+      
+      # Add the plot to the list
+      plot_list[[family]] <- plot
+    }
+  } else {
+    # If there are not enough data points, print a message
+    message(paste("Not enough data points for family:", family))
+  }
+}
+
+# Combine all significant plots into one
+if (length(plot_list) > 0) {
+  
+  # Define maximum number of columns
+  max_ncol <- 3
+  
+  # Calculate number of rows needed
+  ncol <- min(max_ncol, length(plot_list))  # Use the smaller of max_ncol or the number of plots
+  nrow <- ceiling(length(plot_list) / ncol)  # Calculate rows based on the number of plots
+  
+  plot_physeq_LT_GIT_stomach_top10_sign_families <- ggarrange(plotlist = plot_list, ncol = ncol, nrow = nrow) 
+  print(plot_physeq_LT_GIT_stomach_top10_sign_families)
+} else {
+  message("No significant families to plot.")
+}
+```
+
+
+```{r LT: combine gastric composition plot and boxplots}
+plot_physeq_LT_stomach_top10_families_final <- ggarrange(
+  plot_physeq_LT_comp_stomach_top10_families, 
+  plot_physeq_LT_GIT_stomach_top10_sign_families, 
+  labels = c("A", "B"),
+  heights = c(0.6, 1),
+  nrow = 2)
+plot_physeq_LT_stomach_top10_families_final
+
+# Add the title using annotate_figure
+plot_physeq_LT_stomach_top10_families_final_title <- annotate_figure(
+  plot_physeq_LT_stomach_top10_families_final,
+  top = text_grob("GASTRIC COMPOSITIONAL DIFFERENCES", 
+                  size = 14, 
+                  face = "bold"))
+
+plot_physeq_LT_stomach_top10_families_final_title
+
+# Save plot
+#ggsave("25.04.15_MS1_LT_gastric_composition.jpeg", plot = plot_physeq_LT_stomach_top10_families_final_title, device = "jpeg", path = ("supplementary"), units="cm",  width=21, height=30, dpi=300)
+```
+
+```{r LT: calculate Helicobacteraceae percentages in stomach}
+physeq_LT_comp_git_fam_stomach_df %>%
+  filter(Family == "Helicobacteraceae") %>%
+  group_by(sex, treatment) %>%
+  summarize(mean_abundance = mean(Abundance)) %>%
+  mutate(percentage = mean_abundance*100)
+```
+
+```{r LT: compare Hp levels among sexes}
+physeq_LT_comp_git_fam_stomach_Hp_df <- physeq_LT_comp_git_fam_stomach_df %>% filter(Family=="Helicobacteraceae") %>% filter(treatment=="Hp")
+
+# check normal distribution
+physeq_LT_comp_git_fam_stomach_Hp_df %>% shapiro_test(abund_log10) # significant
+
+# check test results from Wilcoxon Rank Sum test 
+physeq_LT_comp_git_fam_stomach_Hp_df %>% wilcox_test(abund_log10 ~ sex) # p = 0.07
+```
+
+### Ileal samples (LT)
+```{r LT: prepare top 10 families for ileal samples}
+physeq_LT_comp_ileum <- subset_samples(physeq_LT_comp_git, sample_site=="ileum")
+
+# check if there is contaminations of Helicobacteraceae 
+physeq_LT_comp_ileum %>% psmelt () %>% 
+  filter(Family == "Helicobacteraceae") %>% 
+  filter(Abundance > 0) %>%
+  group_by(seqSampleID, treatment) %>%
+  summarize(mean_abundance = mean(Abundance)) %>%
+  mutate(percentage = mean_abundance*100) 
+
+# Get the most abundant phyla and the most abundant families within those phyla
+physeq_LT_comp_ileum_top10_families <- top_taxa(
+  physeq_LT_comp_ileum,
+  tax_level = "Family",
+  n_taxa = 10,
+  by_proportion = FALSE)
+
+physeq_LT_comp_git_fam_ileum_df <- physeq_LT_comp_git_fam_df %>% 
+  filter(sample_site == "ileum")
+```
+
+```{r LT: plot top 10 ileal families}
+plot_physeq_LT_comp_ileum_top10_families <- plot_nested_bar(
+  ps_obj = physeq_LT_comp_ileum_top10_families$ps_obj,
+  top_level = "Phylum",
+  nested_level = "Family",
+  palette = c(Bacillota = "#00F034",
+              Bacteroidota = "#008CF0",
+              Campylobacterota = "#E69F00",
+              Desulfobacterota = "#ECF000",
+              Verrucomicrobiota = "#CA0BE8")) +
+  labs(x = "Mouse ID", y = "Relative abundance") + 
+  ggtitle("ILEAL COMPOSITION") +
+  facet_nested(~treatment + sex, 
+                nest_line = element_line(linetype = 1), 
+                scales = "free_x", 
+                space = "free", 
+                labeller = labeller(treatment = c("Ctrl" = "Control", "Hp" = "italic('H. pylori')"),
+                                    .default = label_parsed)) + 
+  theme(axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.text.x = element_blank(), 
+        axis.text.y = element_text(size=12), 
+        axis.ticks.length.x = unit(0.3, "cm"),
+        strip.background.x = element_rect(fill="white"), 
+        strip.text.x = element_text(color="black", size=12), 
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        legend.position = "right", 
+        legend.key.size = unit(0.5, "cm"),
+        legend.title = element_blank(),
+        panel.spacing = unit(0.75, "lines"),
+        panel.border = element_rect(color = "white", fill = NA, size = 0.5)
+        )
+plot_physeq_LT_comp_ileum_top10_families
+
+# save plot
+#ggsave("25.04.15_MS1_LT_ileal_composition.jpeg", plot = plot_physeq_LT_comp_ileum_top10_families, device = "jpeg", path = ("supplementary"), units="cm",  width=21, height=12.5, dpi=300)
+```
+
+
+```{r LT: plot top 10 families in ileal samples}
+# # Get the most abundant phyla and the most abundant families within those phyla
+# physeq_LT_comp_ileum_top10_families <- top_taxa(
+#   physeq_LT_comp_ileum,
+#   tax_level = "Family",
+#   n_taxa = 10,
+#   by_proportion = FALSE)
+# 
+# # create a dataframe with the relative abundance of the top 10 families and add a pseudo count to avoid log(0)
+# physeq_LT_comp_ileum_top10_families_df <- psmelt(physeq_LT_comp_ileum_top10_families$ps_obj) 
+# 
+# # Get list of the top 10 families
+# physeq_LT_comp_ileum_top10_families_list <- unique(physeq_LT_comp_ileum_top10_families_df$Family)[unique(physeq_LT_comp_ileum_top10_families_df$Family) != "Other"]
+# 
+# physeq_LT_comp_git_fam_ileum_df <- physeq_LT_comp_git_fam_df %>% filter(sample_site == "ileum", mouseID != "EO4.4_FL") 
+# 
+# # Create an empty list to store the plots
+# plot_list <- list()
+# # Create an empty vector to store significant families
+# significant_families <- c()
+# 
+# # Iterate over the top 10 families
+# for (family in physeq_LT_comp_ileum_top10_families_list[1:10]) {
+#   # Subset the data for the current family
+#   family_data <- physeq_LT_comp_git_fam_ileum_df %>% filter(Family == family)
+#   
+#   # Check if there are enough data points for the current family
+#   if (nrow(family_data) >= 2) {
+#     # Group by sex, diet_new, and weeks_on_diet_factor and perform the Wilcoxon test
+#     test_results <- family_data %>%
+#       group_by(sex) %>%
+#       summarise(p_value = wilcox.test(abund_log10 ~ treatment)$p.value, .groups = 'drop')
+#     
+#     # Check if any p-value is significant
+#     if (any(test_results$p_value < 0.05)) {
+#       significant_families <- c(significant_families, family)
+#       
+#       # Create the plot for the current family
+#       plot <- ggplot(family_data, aes(x = treatment, y = abund_log10, color = treatment)) + 
+#         geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.5, show.legend = FALSE) +
+#         geom_jitter(height = 0, width = 0.2, size = 1) +
+#         labs(x = "", y = expression(paste("log"[10],"(Relative abundance)"))) + 
+#         facet_wrap(~sex) +
+#         theme_bw() + 
+#         scale_y_continuous(limits = c(-5.1, 0.2), breaks = c(-5, -4, -3, -2, -1, 0)) +
+#         scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+#         scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+#         scale_x_discrete(labels = c("Control", expression(italic("H. pylori")))) + 
+#         ggtitle(family) + 
+#         stat_n_text(size = 2.5, y.pos = -5) + 
+#         theme(
+#           axis.text.x = element_blank(),
+#           axis.ticks.x = element_blank(),
+#           axis.title.y = element_text(size = 12, margin = margin(b = 0)),
+#           axis.title.x = element_blank(),
+#           axis.text.y = element_text(size = 12), 
+#           strip.text.x = element_text(size = 12), 
+#           strip.text.y = element_text(size = 12), 
+#           plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+#           legend.position = "none", 
+#           legend.title = element_blank(), 
+#           legend.text = element_text(size = 12), 
+#           legend.key.size = unit(0.5, 'cm'), 
+#           strip.background = element_blank(), 
+#           panel.grid = element_blank(), 
+#           plot.margin = margin(0, 5, 0, 5)
+#         ) + 
+#         guides(color = guide_legend(override.aes = list(size = 3))) # increase legend symbol size
+#       
+#       # Perform Wilcoxon test and adjust y.position
+#       wilcox_test <- family_data %>%
+#         group_by(sex) %>%
+#         wilcox_test(abund_log10 ~ treatment) %>%
+#         add_significance() %>%
+#         add_xy_position() %>%
+#         mutate(y.position = 0.1)
+#       
+#       # Add significance to the plot
+#       plot <- plot + stat_pvalue_manual(wilcox_test, hide.ns = TRUE, size = 3, tip.length = 0.01)
+#       
+#       # Add the plot to the list
+#       plot_list[[family]] <- plot
+#     }
+#   } else {
+#     # If there are not enough data points, print a message
+#     message(paste("Not enough data points for family:", family))
+#   }
+# }
+# 
+# # Combine all significant plots into one
+# if (length(plot_list) > 0) {
+#   # Generate labels based on the number of significant plots
+#   labels <- LETTERS[1:length(plot_list)]
+#   
+#   # Define maximum number of columns
+#   max_ncol <- 5
+#   
+#   # Calculate number of rows needed
+#   ncol <- min(max_ncol, length(plot_list))  # Use the smaller of max_ncol or the number of plots
+#   nrow <- ceiling(length(plot_list) / ncol)  # Calculate rows based on the number of plots
+#   
+#   plot_physeq_LT_GIT_ileum_top10_sign_families <- ggarrange(plotlist = plot_list, ncol = ncol, nrow = nrow, labels = labels, common.legend = TRUE, legend = "bottom") 
+#   print(plot_physeq_LT_GIT_ileum_top10_sign_families)
+# } else {
+#   message("No significant families to plot.")
+# }
+
+```
+
+### Cecal samples (LT)
+```{r LT: prepare top 10 families for cecal samples}
+physeq_LT_comp_cecum <- subset_samples(physeq_LT_comp_git, sample_site=="cecum")
+
+# check if there is contaminations of Helicobacteraceae 
+physeq_LT_comp_cecum %>% psmelt () %>% 
+  filter(Family == "Helicobacteraceae") %>% 
+  filter(Abundance > 0) %>%
+  group_by(seqSampleID, treatment) %>%
+  summarize(mean_abundance = mean(Abundance)) %>%
+  mutate(percentage = mean_abundance*100) 
+
+# Get the most abundant phyla and the most abundant families within those phyla
+physeq_LT_comp_cecum_top10_families <- top_taxa(physeq_LT_comp_cecum,
+                              tax_level = "Family",
+                              n_taxa = 10,
+                              by_proportion = FALSE)
+
+# create a dataframe with the relative abundance of the top 10 families and add a pseudo count to avoid log(0)
+physeq_LT_comp_cecum_top10_families_df <- psmelt(physeq_LT_comp_cecum_top10_families$ps_obj) 
+
+# Get list of the top 10 families
+physeq_LT_comp_cecum_top10_families_list <- unique(physeq_LT_comp_cecum_top10_families_df$Family)[unique(physeq_LT_comp_cecum_top10_families_df$Family) != "Other"]
+
+physeq_LT_comp_git_fam_cecum_df <- physeq_LT_comp_git_fam_df %>% filter(sample_site == "cecum")
+
+# check if there is contaminations of Helicobacteraceae 
+physeq_LT_comp_git_fam_cecum_df %>%
+  filter(Family == "Helicobacteraceae") %>% 
+  filter(Abundance > 0) %>%
+  group_by(mouseID, treatment) %>%
+  summarize(mean_abundance = mean(Abundance)) %>%
+  mutate(percentage = mean_abundance*100)
+```
+
+```{r LT: plot top 10 cecal families}
+plot_physeq_LT_comp_cecum_top10_families <- plot_nested_bar(
+  ps_obj = physeq_LT_comp_cecum_top10_families$ps_obj,
+  top_level = "Phylum",
+  nested_level = "Family",
+  palette = c(Bacillota = "#00F034",
+              Bacteroidota = "#008CF0",
+              Campylobacterota = "#E69F00",
+              Desulfobacterota = "#ECF000",
+              Verrucomicrobiota = "#CA0BE8")) +
+  labs(x = "Mouse ID", y = "Relative abundance") + 
+  #ggtitle("CECUM") +
+  facet_nested(~treatment + sex, 
+                nest_line = element_line(linetype = 1), 
+                scales = "free_x", 
+                space = "free", 
+                labeller = labeller(treatment = c("Ctrl" = "Control", "Hp" = "italic('H. pylori')"),
+                                    .default = label_parsed)) + 
+  theme(axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.text.x = element_blank(), 
+        axis.text.y = element_text(size=12), 
+        axis.ticks.length.x = unit(0.3, "cm"),
+        strip.background.x = element_rect(fill="white"), 
+        strip.text.x = element_text(color="black", size=12), 
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        legend.position = "right", 
+        legend.title = element_blank(),
+        legend.key.size = unit(0.5, "cm"),
+        panel.spacing = unit(0.75, "lines"),
+        panel.border = element_rect(color = "white", fill = NA, size = 0.5)
+        )
+plot_physeq_LT_comp_cecum_top10_families
+```
+
+```{r LT: plot top 10 families in cecum samples}
+# Create an empty list to store the plots
+plot_list <- list()
+# Create an empty vector to store significant families
+significant_families <- c()
+
+# Iterate over the top 10 families
+for (family in physeq_LT_comp_cecum_top10_families_list[1:10]) {
+  # Subset the data for the current family
+  family_data <- physeq_LT_comp_git_fam_cecum_df %>% filter(Family == family)
+  
+  # Check if there are enough data points for the current family
+  if (nrow(family_data) >= 2) {
+    # Group by sex, diet_new, and weeks_on_diet_factor and perform the Wilcoxon test
+    test_results <- family_data %>%
+      group_by(sex) %>%
+      summarise(p_value = wilcox.test(abund_log10 ~ treatment)$p.value, .groups = 'drop')
+    
+    # Check if any p-value is significant
+    if (any(test_results$p_value < 0.05)) {
+      significant_families <- c(significant_families, family)
+      
+      # Create the plot for the current family
+      plot <- ggplot(family_data, aes(x = treatment, y = abund_log10, color = treatment)) + 
+        geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.5, show.legend = FALSE) +
+        geom_jitter(height = 0, width = 0.2, size = 1) +
+        labs(x = "", y = expression(paste("log"[10],"(Rel. abundance)"))) + 
+        facet_wrap(~sex) +
+        theme_bw() + 
+        scale_y_continuous(limits = c(-5.1, 0.2), breaks = c(-5, -4, -3, -2, -1, 0)) +
+        scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+        scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+        scale_x_discrete(labels = c("Control", expression(italic("H. pylori")))) + 
+        ggtitle(family) + 
+        stat_n_text(size = 4, y.pos = -5) + 
+        theme(
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_text(size = 12, margin = margin(b = 0)),
+          axis.title.x = element_blank(),
+          axis.text.y = element_text(size = 12), 
+          strip.text.x = element_text(size = 12), 
+          strip.text.y = element_text(size = 12), 
+          plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+          legend.position = "bottom", 
+          legend.title = element_blank(), 
+          legend.text = element_text(size = 12), 
+          legend.key.size = unit(0.5, 'cm'), 
+          legend.margin = margin(t = -10),  # Adjust this value as needed
+          strip.background = element_blank(), 
+          panel.grid = element_blank()
+        ) + 
+        guides(color = guide_legend(override.aes = list(size = 3))) # increase legend symbol size
+      
+      # Perform Wilcoxon test and adjust y.position
+      wilcox_test <- family_data %>%
+        group_by(sex) %>%
+        wilcox_test(abund_log10 ~ treatment) %>%
+        add_significance() %>%
+        add_xy_position() %>%
+        mutate(y.position = 0.1)
+      
+      # Add significance to the plot
+      plot <- plot + stat_pvalue_manual(wilcox_test, hide.ns = TRUE, size = 3, tip.length = 0.01)
+      
+      # Add the plot to the list
+      plot_list[[family]] <- plot
+    }
+  } else {
+    # If there are not enough data points, print a message
+    message(paste("Not enough data points for family:", family))
+  }
+}
+
+# Combine all significant plots into one
+if (length(plot_list) > 0) {
+  
+  # Define maximum number of columns
+  max_ncol <- 5
+  
+  # Calculate number of rows needed
+  ncol <- min(max_ncol, length(plot_list))  # Use the smaller of max_ncol or the number of plots
+  nrow <- ceiling(length(plot_list) / ncol)  # Calculate rows based on the number of plots
+  
+  plot_physeq_LT_GIT_cecum_top10_sign_families <- ggarrange(plotlist = plot_list, ncol = ncol, nrow = nrow) 
+  print(plot_physeq_LT_GIT_cecum_top10_sign_families)
+} else {
+  message("No significant families to plot.")
+}
+
+```
+
+```{r LT: combine cecal composition plot and boxplots}
+plot_physeq_LT_cecum_top10_families_final <- ggarrange(
+  plot_physeq_LT_comp_cecum_top10_families, 
+  plot_physeq_LT_GIT_cecum_top10_sign_families, 
+  labels = c("A", "B"),
+  heights = c(1, 0.7),
+  nrow = 2)
+plot_physeq_LT_cecum_top10_families_final
+
+# Add the title using annotate_figure
+plot_physeq_LT_cecum_top10_families_final_title <- annotate_figure(
+  plot_physeq_LT_cecum_top10_families_final,
+  top = text_grob("CECAL COMPOSITIONAL DIFFERENCES", 
+                  size = 14, 
+                  face = "bold"))
+
+plot_physeq_LT_cecum_top10_families_final_title
+
+# Save plot
+#ggsave("25.04.15_MS1_LT_cecal_composition.jpeg", plot = plot_physeq_LT_cecum_top10_families_final_title, device = "jpeg", path = ("supplementary"), units="cm",  width=21, height=18, dpi=300)
+```
+
+### Colonic samples (LT)
+```{r LT: prepare top 10 families for colonic samples}
+physeq_LT_comp_colon <- subset_samples(physeq_LT_comp_git, sample_site=="colon")
+
+
+# Get the most abundant phyla and the most abundant families within those phyla
+physeq_LT_comp_colon_top10_families <- top_taxa(physeq_LT_comp_colon,
+                              tax_level = "Family",
+                              n_taxa = 10,
+                              by_proportion = FALSE)
+
+# create a dataframe with the relative abundance of the top 10 families and add a pseudo count to avoid log(0)
+physeq_LT_comp_colon_top10_families_df <- psmelt(physeq_LT_comp_colon_top10_families$ps_obj) 
+
+# Get list of the top 10 families
+physeq_LT_comp_colon_top10_families_list <- unique(physeq_LT_comp_colon_top10_families_df$Family)[unique(physeq_LT_comp_colon_top10_families_df$Family) != "Other"]
+
+physeq_LT_comp_git_fam_colon_df <- physeq_LT_comp_git_fam_df %>% filter(sample_site == "colon")
+
+# check if there is contaminations of Helicobacteraceae 
+physeq_LT_comp_git_fam_colon_df %>%
+  filter(Family == "Helicobacteraceae") %>% 
+  filter(Abundance > 0) %>%
+  group_by(mouseID, treatment) %>%
+  summarize(mean_abundance = mean(Abundance)) %>%
+  mutate(percentage = mean_abundance*100)
+```
+
+```{r LT: plot top 10 colonic families}
+# Get the most abundant phyla and the most abundant families within those phyla
+physeq_LT_comp_colon_top10_families <- top_taxa(
+  physeq_LT_comp_colon,
+  tax_level = "Family",
+  n_taxa = 10,
+  by_proportion = FALSE)
+
+plot_physeq_LT_comp_colon_top10_families <- plot_nested_bar(
+  ps_obj = physeq_LT_comp_colon_top10_families$ps_obj,
+  top_level = "Phylum",
+  nested_level = "Family",
+  palette = c(Bacillota = "#00F034",
+              Bacteroidota = "#008CF0",
+              Campylobacterota = "#E69F00",
+              Desulfobacterota = "#ECF000",
+              Verrucomicrobiota = "#CA0BE8")) +
+  labs(x = "Mouse ID", y = "Relative abundance") + 
+  #ggtitle("COLON") +
+  facet_nested(~treatment + sex, 
+                nest_line = element_line(linetype = 1), 
+                scales = "free_x", 
+                space = "free", 
+                labeller = labeller(treatment = c("Ctrl" = "Control", "Hp" = "italic('H. pylori')"),
+                                    .default = label_parsed)) + 
+  theme(axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.text.x = element_blank(), 
+        axis.text.y = element_text(size=12), 
+        axis.ticks.length.x = unit(0.3, "cm"),
+        strip.background.x = element_rect(fill="white"), 
+        strip.text.x = element_text(color="black", size=12), 
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        legend.position = "right", 
+        legend.title = element_blank(),
+        legend.key.size = unit(0.5, "cm"),
+        panel.spacing = unit(0.75, "lines"),
+        panel.border = element_rect(color = "white", fill = NA, size = 0.5)
+        )
+plot_physeq_LT_comp_colon_top10_families
+```
+
+```{r LT: plot top 10 families in colon samples}
+# Create an empty list to store the plots
+plot_list <- list()
+# Create an empty vector to store significant families
+significant_families <- c()
+
+# Iterate over the top 10 families
+for (family in physeq_LT_comp_colon_top10_families_list[1:10]) {
+  # Subset the data for the current family
+  family_data <- physeq_LT_comp_git_fam_colon_df %>% filter(Family == family)
+  
+  # Check if there are enough data points for the current family
+  if (nrow(family_data) >= 2) {
+    # Group by sex, diet_new, and weeks_on_diet_factor and perform the Wilcoxon test
+    test_results <- family_data %>%
+      group_by(sex) %>%
+      summarise(p_value = wilcox.test(abund_log10 ~ treatment)$p.value, .groups = 'drop')
+    
+    # Check if any p-value is significant
+    if (any(test_results$p_value < 0.05)) {
+      significant_families <- c(significant_families, family)
+      
+      # Create the plot for the current family
+      plot <- ggplot(family_data, aes(x = treatment, y = abund_log10, color = treatment)) + 
+        geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.5, show.legend = FALSE) +
+        geom_jitter(height = 0, width = 0.2, size = 1) +
+        labs(x = "", y = expression(paste("log"[10],"(Rel. abundance)"))) + 
+        facet_wrap(~sex) +
+        theme_bw() + 
+        scale_y_continuous(limits = c(-5.1, 0.2), breaks = c(-5, -4, -3, -2, -1, 0)) +
+        scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+        scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+        scale_x_discrete(labels = c("Control", expression(italic("H. pylori")))) + 
+        ggtitle(family) + 
+        stat_n_text(size = 4, y.pos = -5) + 
+        theme(
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_text(size = 12, margin = margin(b = 0)),
+          axis.title.x = element_blank(),
+          axis.text.y = element_text(size = 12), 
+          strip.text.x = element_text(size = 12), 
+          strip.text.y = element_text(size = 12), 
+          plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+          legend.position = "bottom", 
+          legend.title = element_blank(), 
+          legend.text = element_text(size = 12), 
+          legend.key.size = unit(0.5, 'cm'), 
+          legend.margin = margin(t = -10),  # Adjust this value as needed
+          strip.background = element_blank(), 
+          panel.grid = element_blank()
+        ) + 
+        guides(color = guide_legend(override.aes = list(size = 3))) # increase legend symbol size
+      
+      # Perform Wilcoxon test and adjust y.position
+      wilcox_test <- family_data %>%
+        group_by(sex) %>%
+        wilcox_test(abund_log10 ~ treatment) %>%
+        add_significance() %>%
+        add_xy_position() %>%
+        mutate(y.position = 0.1)
+      
+      # Add significance to the plot
+      plot <- plot + stat_pvalue_manual(wilcox_test, hide.ns = TRUE, size = 3, tip.length = 0.01)
+      
+      # Add the plot to the list
+      plot_list[[family]] <- plot
+    }
+  } else {
+    # If there are not enough data points, print a message
+    message(paste("Not enough data points for family:", family))
+  }
+}
+
+# Combine all significant plots into one
+if (length(plot_list) > 0) {
+  
+  # Define maximum number of columns
+  max_ncol <- 5
+  
+  # Calculate number of rows needed
+  ncol <- min(max_ncol, length(plot_list))  # Use the smaller of max_ncol or the number of plots
+  nrow <- ceiling(length(plot_list) / ncol)  # Calculate rows based on the number of plots
+  
+  plot_physeq_LT_GIT_colon_top10_sign_families <- ggarrange(plotlist = plot_list, ncol = ncol, nrow = nrow) 
+  print(plot_physeq_LT_GIT_colon_top10_sign_families)
+} else {
+  message("No significant families to plot.")
+}
+
+```
+
+```{r LT: combine colonic composition plot and boxplots}
+plot_physeq_LT_colon_top10_families_final <- ggarrange(
+  plot_physeq_LT_comp_colon_top10_families, 
+  plot_physeq_LT_GIT_colon_top10_sign_families, 
+  labels = c("A", "B"),
+  heights = c(1, 0.7),
+  nrow = 2)
+plot_physeq_LT_colon_top10_families_final
+
+# Add the title using annotate_figure
+plot_physeq_LT_colon_top10_families_final_title <- annotate_figure(
+  plot_physeq_LT_colon_top10_families_final,
+  top = text_grob("COLONIC COMPOSITIONAL DIFFERENCES", 
+                  size = 14, 
+                  face = "bold"))
+
+plot_physeq_LT_colon_top10_families_final_title
+
+# Save plot
+#ggsave("25.04.15_MS1_LT_colonic_composition.jpeg", plot = plot_physeq_LT_colon_top10_families_final_title, device = "jpeg", path = ("supplementary"), units="cm",  width=21, height=18, dpi=300)
+```
+
+# Short-term
+## fecal samples (ST)
+```{r ST: prepare fecal phyloseq object}
+physeq_ST_comp_fecal <- physeq_ST_comp %>% 
+  subset_samples(timepoint!="t4") %>%
+  mutate_tax_table(Family = ifelse(Family == "[Eubacterium] coprostanoligenes group", 
+                                    "Eub. coprostanoligenes gr.", 
+                                    Family))# subset to fecal samples
+
+physeq_ST_comp_fecal_fam_df <- phyloseq::tax_glom(physeq_ST_comp_fecal, taxrank = "Family") %>% 
+  psmelt() %>%
+  mutate(pseudocount = min(Abundance[Abundance > 0]) / 2) %>%  # Calculate pseudocount
+  mutate(Abundance_pseudocount = Abundance + pseudocount) %>% 
+  select(-pseudocount) %>% 
+  mutate(abund_log10 = log10(Abundance_pseudocount)) 
+
+# check if there is contaminations of Helicobacteraceae 
+physeq_ST_comp_fecal_fam_df %>%
+  filter(Family == "Helicobacteraceae") %>% 
+  filter(Abundance > 0) %>%
+  group_by(mouseID, treatment) %>%
+  summarize(mean_abundance = mean(Abundance)) %>%
+  mutate(percentage = mean_abundance*100)
+
+# Get the most abundant phyla and the most abundant families within those phyla
+physeq_ST_comp_fecal_top10_fam <- top_taxa(physeq_ST_comp_fecal,
+                              tax_level = "Family",
+                              n_taxa = 10,
+                              by_proportion = FALSE)
+
+# create a dataframe with the relative abundance of the top 10 families and add a pseudo count to avoid log(0)
+physeq_ST_comp_fecal_top10_fam_df <- psmelt(physeq_ST_comp_fecal_top10_fam$ps_obj) 
+
+# Get list of the top 10 families
+physeq_ST_comp_fecal_top10_fam_list <- unique(physeq_ST_comp_fecal_top10_fam_df$Family)[unique(physeq_ST_comp_fecal_top10_fam_df$Family) != "Other"]
+
+
+```
+
+```{r ST: plot relative abundance of top 10 fecal families}
+physeq_ST_comp_fecal_top10_families_females <- subset_samples(physeq_ST_comp_fecal_top10_fam$ps_obj, sex == "female")
+physeq_ST_comp_fecal_top10_families_males <- subset_samples(physeq_ST_comp_fecal_top10_fam$ps_obj, sex == "male")
+
+plot_physeq_ST_comp_fecal_top10_families_males <- plot_nested_bar(
+  ps_obj = physeq_ST_comp_fecal_top10_families_males,
+  top_level = "Phylum",
+  nested_level = "Family",
+  palette = c(Bacillota = "#00F034",
+              Bacteroidota = "#008CF0",
+              Desulfobacterota = "#ECF000",
+              Verrucomicrobiota = "#CA0BE8")) +
+  labs(x = "Mouse ID", y = "Relative abundance") + 
+  scale_y_continuous(sec.axis = sec_axis(~ ., name = "males")) + 
+  facet_nested(~treatment + diet_new + weeks_on_diet, 
+                nest_line = element_line(linetype = 1), 
+                scales = "free_x", 
+                space = "free", 
+                solo_line = TRUE,
+                labeller = labeller(treatment = c("Ctrl" = "Control", "Hp" = "italic('H. pylori')"), 
+                    weeks_on_diet = c("-2" = "'-2w'", "0" = "'0w'", "1" = "'1w'"),
+                    .default = label_parsed)) + 
+  theme(axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.text.x = element_blank(), 
+        axis.text.y = element_text(size=12), 
+        axis.text.y.right = element_blank(), 
+        axis.ticks.y.right = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.background.x = element_rect(fill="white"), 
+        strip.text.x = element_text(color="black", size=12), 
+        legend.position = "none", 
+        legend.key.size = unit(0.5, "cm"),
+        legend.title = element_blank(),
+        axis.title.y.right = element_text(size = 12),
+        panel.spacing = unit(0.75, "lines"),
+        panel.border = element_rect(color = "white", fill = NA, size = 0.5)
+        )
+
+plot_physeq_ST_comp_fecal_top10_families_males
+
+plot_physeq_ST_comp_fecal_top10_families_females <- plot_nested_bar(
+  ps_obj = physeq_ST_comp_fecal_top10_families_females,
+  top_level = "Phylum",
+  nested_level = "Family",
+  palette = c(Bacillota = "#00F034",
+              Bacteroidota = "#008CF0",
+              Desulfobacterota = "#ECF000",
+              Verrucomicrobiota = "#CA0BE8")) +
+  labs(x = "Mouse ID", y = "Relative abundance") + 
+  scale_y_continuous(sec.axis = sec_axis(~ ., name = "females")) + 
+  facet_nested(~treatment + diet_new + weeks_on_diet, 
+                nest_line = element_line(linetype = 1), 
+                scales = "free_x", 
+                space = "free", 
+                solo_line = TRUE,
+                labeller = labeller(treatment = c("Ctrl" = "Control", "Hp" = "italic('H. pylori')"), 
+                    weeks_on_diet = c("-2" = "'-2w'", "0" = "'0w'", "1" = "'1w'"),
+                    .default = label_parsed)) + 
+  theme(axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.text.x = element_blank(), 
+        axis.text.y = element_text(size=12), 
+        axis.text.y.right = element_blank(), 
+        axis.ticks.y.right = element_blank(),
+        axis.ticks.x = element_blank(),
+        strip.background.x = element_rect(fill="white"), 
+        strip.text.x = element_text(color="black", size=12), 
+        legend.position = "none", 
+        legend.key.size = unit(0.5, "cm"),
+        legend.title = element_blank(),
+        axis.title.y.right = element_text(size = 12),
+        panel.spacing = unit(0.75, "lines"),
+        panel.border = element_rect(color = "white", fill = NA, size = 0.5)
+        )
+
+plot_physeq_ST_comp_fecal_top10_families_females
+```
+
+```{r ST: plot final fecal plot}
+plot_physeq_ST_comp_fecal_top10_families_final <- ggpubr::ggarrange(
+  plot_physeq_ST_comp_fecal_top10_families_females, 
+  plot_physeq_ST_comp_fecal_top10_families_males, 
+                          nrow=2, 
+                          align ="h", 
+                          common.legend = TRUE, 
+                          legend = "right"
+                          )
+plot_physeq_ST_comp_fecal_top10_families_final
+
+# Plot the figure
+#ggsave("24.10.31_MS1_FigS10.png", plot = plot_physeq_ST_comp_fecal_top10_families_final, device = "png", path = ("supplementary"), units="cm",  width=25, height=20, dpi=300)
+```
+
+```{r ST: create loop for running a LMM on top 10 fecal families}
+# Create an empty list to store the models
+models <- list()
+
+# Loop over the bacterial families
+for (family in physeq_ST_comp_fecal_top10_fam_list) {
+  # Print the name of the family
+  print(paste("Family:", family))
+  
+  # Subset the data for the current family
+  data_subset <- physeq_ST_comp_fecal_fam_df[physeq_ST_comp_fecal_fam_df$Family == family, ]
+  
+  # Fit the model
+  model <- lmerTest::lmer(formula = abund_log10 ~ treatment + diet_new + sex + (1|mouseID) + (1|weeks_on_diet_factor), data = data_subset)
+  
+  # Print the summary
+  print(summary(model))
+  
+  # Save the model in the list with the family name as the key
+  models[[family]] <- model
+}
+
+
+# the three families where Hp has a sign. effect on rel. abundance:
+#print(summary(models$Akkermansiaceae)) # almost significant... 
+#print(summary(models$Lachnospiraceae)) 
+
+```
+
+```{r ST: plot top 10 families in fecal samples, but only significant ones}
+# Create an empty list to store the plots
+plot_list <- list()
+# Create an empty vector to store significant families
+significant_families <- c()
+
+# Iterate over the top 10 families
+for (family in physeq_ST_comp_fecal_top10_fam_list[1:10]) {
+  # Subset the data for the current family
+  family_data <- physeq_ST_comp_fecal_fam_df %>% filter(Family == family)
+  
+  # Check if there are enough data points for the current family
+  if (nrow(family_data) >= 2) {
+    # Group by sex, diet_new, and weeks_on_diet_factor and perform the Wilcoxon test
+    test_results <- family_data %>%
+      group_by(sex, diet_new, weeks_on_diet_factor) %>%
+      summarise(p_value = wilcox.test(abund_log10 ~ treatment)$p.value, .groups = 'drop')
+    
+    # Check if any p-value is significant
+    if (any(test_results$p_value < 0.05)) {
+      significant_families <- c(significant_families, family)
+      
+      # Create the plot for the current family
+      plot <- ggplot(family_data, aes(x = treatment, y = abund_log10, color = treatment)) + 
+        geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.5, show.legend = FALSE) +
+        geom_jitter(height = 0, width = 0.2, size = 1) +
+        labs(x = "", y = expression(paste("log"[10],"(Relative abundance)"))) + 
+        facet_nested(sex ~ diet_new + weeks_on_diet_factor, nest_line = element_line(linetype = 1), solo_line = TRUE,
+                     scales = "free", labeller = labeller(weeks_on_diet_factor = c("-2" = "-2w", "0" = "0w", "1" = "1w"))) +
+        theme_bw() + 
+        scale_y_continuous(limits = c(-5.1, 0.1), breaks = c(-5, -4, -3, -2, -1, 0)) +
+        scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+        scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+        scale_x_discrete(labels = c("Control", expression(italic("H. pylori")))) + 
+        ggtitle(family) + 
+        stat_n_text(size = 2.5, y.pos = -5) + 
+        theme(
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_text(size = 12, margin = margin(b = 0)),
+          axis.title.x = element_blank(),
+          axis.text.y = element_text(size = 12), 
+          strip.text.x = element_text(size = 12), 
+          strip.text.y = element_text(size = 12), 
+          plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+          legend.position = "bottom", 
+          legend.title = element_blank(), 
+          legend.text = element_text(size = 12), 
+          legend.key.size = unit(0.5, 'cm'), 
+          legend.margin = margin(t = -10),  # Adjust this value as needed
+          strip.background = element_blank(), 
+          panel.grid = element_blank()
+        ) + 
+        guides(color = guide_legend(override.aes = list(size = 3))) # increase legend symbol size
+      
+      # Perform Wilcoxon test and adjust y.position
+      wilcox_fecal_ST <- family_data %>%
+        group_by(sex, diet_new, weeks_on_diet_factor) %>%
+        wilcox_test(abund_log10 ~ treatment) %>%
+        add_significance() %>%
+        add_xy_position() %>%
+        mutate(y.position = 0)
+      
+      # Add significance to the plot
+      plot <- plot + stat_pvalue_manual(wilcox_fecal_ST, hide.ns = TRUE)
+      
+      # Add the plot to the list
+      plot_list[[family]] <- plot
+    }
+  } else {
+    # If there are not enough data points, print a message
+    message(paste("Not enough data points for family:", family))
+  }
+}
+
+# Combine all significant plots into one
+if (length(plot_list) > 0) {
+
+  
+  plot_physeq_ST_fecal_top10_fam <- ggarrange(plotlist = plot_list, ncol = 3) 
+  print(plot_physeq_ST_fecal_top10_fam)
+} else {
+  message("No significant families to plot.")
+}
+
+# check statistics for significantly different families in fecal samples
+physeq_ST_comp_fecal_fam_df %>%
+  filter(Family %in% c("Akkermansiaceae", "Lachnospiraceae", "Prevotellaceae")) %>%
+  group_by(Family, sex, diet_new, weeks_on_diet_factor) %>%
+  do(wilcox_result = wilcox_test(abund_log10 ~ treatment, data = .)) %>%
+  unnest(wilcox_result) %>%
+  add_significance()
+
+# Save plot
+#ggsave("24.11.15_MS1_ST_fecal_top10fam_sign.png", plot = plot_physeq_ST_fecal_top10_fam, device = "png", path = ("supplementary"), units="cm",  width=21, height=10, dpi=300)
+```
+
+```{r ST: combine fecal composition plot and boxplots}
+plot_physeq_ST_comp_fecal_top10_families_combined <- ggarrange(
+  plot_physeq_ST_comp_fecal_top10_families_final, 
+  plot_physeq_ST_fecal_top10_fam, 
+  labels = c("A", "B"),
+  heights = c(1, 0.7),
+  nrow = 2)
+plot_physeq_ST_comp_fecal_top10_families_combined
+
+# Add the title using annotate_figure
+plot_physeq_ST_comp_fecal_top10_families_combined_title <- annotate_figure(
+  plot_physeq_ST_comp_fecal_top10_families_combined,
+  top = text_grob("FECAL COMPOSITIONAL DIFFERENCES", 
+                  size = 14, 
+                  face = "bold"))
+
+plot_physeq_ST_comp_fecal_top10_families_combined_title
+
+# Save plot
+"ggsave("25.04.15_MS1_ST_fecal_composition.jpeg", plot = plot_physeq_ST_comp_fecal_top10_families_combined_title, device = "jpeg", path = ("supplementary"), units="cm",  width=23, height=30, dpi=300)
+```
+
+```{r ST: calculate Akkermansiaceae percentages in fecal samples}
+physeq_ST_comp_fecal_fam_df %>%
+  filter(Family == "Akkermansiaceae") %>%
+  group_by(sex, diet_new, treatment) %>%
+  summarize(mean_abundance = mean(Abundance))
+```
+```{r ST: Akkermansiaceae prevalence analysis}
+physeq_ST_comp_fecal_akker_df <- physeq_ST_comp_fecal_fam_df %>%
+  filter(Family == "Akkermansiaceae") %>%
+  mutate(akkermansiaceae_presence = ifelse(Abundance > 0.01, "yes", "no"))
+physeq_ST_comp_fecal_akker_df
+
+physeq_ST_comp_fecal_akker_df <- physeq_ST_comp_fecal_akker_df %>%
+  mutate(
+    treatment = as.factor(treatment),
+    akkermansiaceae_presence = as.factor(akkermansiaceae_presence),
+    diet = as.factor(diet),
+    sex = as.factor(sex)
+  )
+
+contingency_table <- physeq_ST_comp_fecal_akker_df %>%
+  filter(weeks_on_diet == 0) %>%
+  group_by(treatment, akkermansiaceae_presence) %>%
+  summarise(count = n()) %>%
+  pivot_wider(names_from = akkermansiaceae_presence, values_from = count, values_fill = list(count = 0)) %>%
+  rename(akker_no = `no`, akker_yes = `yes`) %>%
+  column_to_rownames(var = "treatment")
+contingency_table
+
+mosaicplot(contingency_table, color = TRUE)
+
+fisher_test_result <- fisher.test(contingency_table)
+fisher_test_result
+```
+
+
+
+```{r ST: plot Bacillota/Bacteroidota ratio}
+physeq_ST_fecal_bacillo_bacter_df <- phyloseq::tax_glom(physeq_ST_comp_fecal, taxrank = "Phylum") %>% 
+  psmelt() %>%
+  filter(Phylum %in% c("Bacillota", "Bacteroidota")) %>%
+  filter(Abundance > 0) %>%
+  group_by(mouseID, weeks_on_diet) %>%
+  mutate(BB_ratio = sum(Abundance[Phylum == "Bacillota"]) / sum(Abundance[Phylum == "Bacteroidota"])) %>%
+  distinct(mouseID, .keep_all = TRUE) %>%
+  mutate(BB_ratio_log10 = log10(BB_ratio))
+
+# Pre-diet data
+physeq_ST_fecal_BB_pre_diet <- physeq_ST_fecal_bacillo_bacter_df %>% 
+  filter(weeks_on_diet >= -2 & weeks_on_diet <= 0) %>% 
+  group_by(weeks_on_diet_factor, sex, treatment_diet_new) %>%
+  summarize(mean_BB_ratio_log10 = mean(BB_ratio_log10), 
+            SD_BB_ratio_log10 = sd(BB_ratio_log10))
+
+# Post-diet data
+physeq_ST_fecal_BB_post_diet <- physeq_ST_fecal_bacillo_bacter_df %>% 
+  filter(weeks_on_diet >= 0 & weeks_on_diet <= 1) %>% 
+  group_by(weeks_on_diet_factor, sex, treatment_diet_new) %>%
+  summarize(mean_BB_ratio_log10 = mean(BB_ratio_log10), 
+            SD_BB_ratio_log10 = sd(BB_ratio_log10)) %>%
+  dplyr::slice(rep(1:n(), each = ifelse(treatment_diet_new == "Ctrl_chow" & (sex == "female" | sex == "male"), 2, 1))) %>%
+  mutate(treatment_diet_new = case_when(
+    treatment_diet_new == "Ctrl_chow" & row_number() %% 2 == 1 ~ "Ctrl_CD",
+    treatment_diet_new == "Ctrl_chow" & row_number() %% 2 == 0 ~ "Ctrl_HFD",
+    treatment_diet_new == "Hp_chow" & row_number() %% 2 == 1 ~ "Hp_CD",
+    treatment_diet_new == "Hp_chow" & row_number() %% 2 == 0 ~ "Hp_HFD",
+    TRUE ~ treatment_diet_new
+  ))
+
+# Step 1: Create the initial plot with the two lines
+plot_physeq_ST_fecal_BB_ratio <- ggplot() + 
+  geom_line(data=physeq_ST_fecal_BB_pre_diet, 
+            aes(x=weeks_on_diet_factor, y=mean_BB_ratio_log10, color=treatment_diet_new, linetype=treatment_diet_new, group = treatment_diet_new), 
+            size=1) +
+  geom_line(data=physeq_ST_fecal_BB_post_diet, 
+            aes(x=weeks_on_diet_factor, y=mean_BB_ratio_log10, color=treatment_diet_new, linetype=treatment_diet_new, group = treatment_diet_new), 
+            size=1) +
+   labs(x = "Time on diet (weeks)", y = expression(paste("log"[10],"(Bacillota/Bacteroidota ratio)"))) + 
+  geom_vline(xintercept = "0", linetype = "solid", color="black") + 
+  theme_pubr(border = TRUE) +
+  scale_color_manual(
+    values = c(
+      "Ctrl_chow" = "#0072B2",
+      "Ctrl_CD" = "#0072B2",
+      "Ctrl_HFD" = "#0072B2",
+      "Hp_chow" = "#E69F00",
+      "Hp_CD" = "#E69F00",
+      "Hp_HFD" = "#E69F00"),
+    breaks = c("Ctrl_chow", "Hp_chow", "Ctrl_CD", "Hp_CD", "Ctrl_HFD", "Hp_HFD"),
+    labels = c(
+      "Ctrl_chow" = expression("Control + chow"),
+      "Ctrl_CD" = expression("Control + CD"),
+      "Ctrl_HFD" = expression("Control + HFD"),
+      "Hp_chow" = expression(italic("H. pylori") * " + chow"),
+      "Hp_CD" = expression(italic("H. pylori") * " + CD"),
+      "Hp_HFD" = expression(italic("H. pylori") * " + HFD"))) +
+  scale_linetype_manual(
+    values = c(
+      "Ctrl_chow" = "dashed",
+      "Ctrl_CD" = "dotted",
+      "Ctrl_HFD" = "solid",
+      "Hp_chow" = "dashed",
+      "Hp_CD" = "dotted",
+      "Hp_HFD" = "solid"),
+    breaks = c("Ctrl_chow", "Hp_chow", "Ctrl_CD", "Hp_CD", "Ctrl_HFD", "Hp_HFD"),
+    labels = c(
+      "Ctrl_chow" = expression("Control + chow"),
+      "Ctrl_CD" = expression("Control + CD"),
+      "Ctrl_HFD" = expression("Control + HFD"),
+      "Hp_chow" = expression(italic("H. pylori") * " + chow"),
+      "Hp_CD" = expression(italic("H. pylori") * " + CD"),
+      "Hp_HFD" = expression(italic("H. pylori") * " + HFD"))) + 
+  facet_grid(~sex) + 
+  scale_x_discrete(breaks = c("-2", "0", "1"), expand = c(0,0)) +
+  ggtitle("SHORT-TERM") + 
+  theme_bw() + 
+theme(axis.text.x = element_text(size=12), 
+        axis.title.y = element_text(size = 12), 
+        axis.title.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 12), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        plot.title = element_text(hjust = 0.5, size = 12, face = "bold"), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.key.height = unit(0.5, 'cm'),  # Adjust the height
+        legend.key.width = unit(1, 'cm'),
+        legend.background = element_rect(color = "black", size = 0.5),
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        strip.background = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.spacing = unit(1, "lines")) 
+plot_physeq_ST_fecal_BB_ratio
+
+# Step 2: Add the first geom_line
+plot_physeq_ST_fecal_BB_ratio_final <- plot_physeq_ST_fecal_BB_ratio + 
+  geom_line(data=physeq_ST_fecal_bacillo_bacter_df, 
+            aes(x=weeks_on_diet_factor, y=BB_ratio_log10, color=treatment_diet_new, group=mouseID), 
+            alpha=0.3, size=0.5, show.legend = FALSE) + 
+  geom_vline(xintercept = 0, linetype = "solid", color="black")
+
+# Display the final plot
+plot_physeq_ST_fecal_BB_ratio_final
+```
+
+```{r ST: linear mixed model for Bacillota/Bacteroidota ratio}
+# Fit the linear mixed model
+physeq_ST_BB_LMM <- lmerTest::lmer(log10(BB_ratio) ~ treatment + diet_new + sex + (1 | mouseID), data = physeq_ST_fecal_bacillo_bacter_df)
+summary(physeq_ST_BB_LMM)
+
+# print results as html table format
+tab_model(physeq_ST_BB_LMM,
+                                    show.re.var=TRUE, 
+                                    show.icc=TRUE, 
+                                    show.r2=TRUE,
+                                    ci.hyphen = " ; ", 
+                                    string.ci = "CI (95%)",
+                                    string.p = "P-value",
+                                    dv.labels = c("log10(B/B ratio) ~ treatment + diet + sex + (1|mouseID)")
+)
+```
+
+## GIT samples (ST)
+```{r ST: prepare GIT phyloseq object}
+physeq_ST_comp_git <-  physeq_ST_comp %>%
+  subset_samples(timepoint == "t4") %>%
+  mutate_tax_table(Family = ifelse(Family == "[Eubacterium] coprostanoligenes group", 
+                                    "Eub. coprostanoligenes gr.", 
+                                    Family))
+
+physeq_ST_comp_git_fam_df <- phyloseq::tax_glom(physeq_ST_comp_git, taxrank = "Family") %>% 
+  psmelt() %>%
+  mutate(pseudocount = min(Abundance[Abundance > 0]) / 2) %>%  # Calculate pseudocount
+  mutate(Abundance_pseudocount = Abundance + pseudocount) %>% 
+  select(-pseudocount) %>% 
+  mutate(abund_log10 = log10(Abundance_pseudocount)) 
+```
+
+### Gastric samples (ST)
+```{r ST: prepare top 10 families for gastric samples}
+physeq_ST_comp_stomach <- subset_samples(physeq_ST_comp_git, sample_type=="stomach")
+
+# check if there is contaminations of Helicobacteraceae in controls 
+physeq_ST_comp_stomach %>% psmelt() %>% 
+  filter(treatment != "Hp") %>%
+  filter(Family == "Helicobacteraceae") %>% 
+  filter(Abundance > 0) %>%
+  group_by(seqSampleID, treatment) %>%
+  summarize(mean_abundance = mean(Abundance)) %>%
+  mutate(percentage = mean_abundance*100)
+
+# EO5.12.MN.sto	(Ctrl)	Helicobacteraceae_Abundance = 0.05613126 % 
+
+# Get the most abundant phyla and the most abundant families within those phyla
+physeq_ST_comp_stomach_top10_families <- top_taxa(physeq_ST_comp_stomach,
+                              tax_level = "Family",
+                              n_taxa = 10,
+                              by_proportion = FALSE)
+
+# create a dataframe with the relative abundance of the top 10 families and add a pseudo count to avoid log(0)
+physeq_ST_comp_stomach_top10_families_df <- psmelt(physeq_ST_comp_stomach_top10_families$ps_obj) 
+
+# Get list of the top 10 families
+physeq_ST_comp_stomach_top10_families_list <- unique(physeq_ST_comp_stomach_top10_families_df$Family)[unique(physeq_ST_comp_stomach_top10_families_df$Family) != "Other"]
+
+physeq_ST_comp_git_fam_stomach_df <- physeq_ST_comp_git_fam_df %>% 
+  filter(sample_type == "stomach") %>% 
+  filter(seqSampleID != "EO5.12.MN.sto")
+
+
+```
+
+```{r ST: plot top10 gastric families}
+# Get the most abundant phyla and the most abundant families within those phyla
+physeq_ST_comp_gastric_top10_families <- top_taxa(
+  physeq_ST_comp_stomach,
+  tax_level = "Family",
+  n_taxa = 10,
+  by_proportion = FALSE)
+
+plot_physeq_ST_comp_stomach_top10_families <- plot_nested_bar(
+  ps_obj = physeq_ST_comp_gastric_top10_families$ps_obj,
+  top_level = "Phylum",
+  nested_level = "Family",
+  palette = c(Bacillota = "#00F034",
+              Bacteroidota = "#008CF0",
+              Campylobacterota = "#E69F00",
+              Desulfobacterota = "#ECF000",
+              Verrucomicrobiota = "#CA0BE8")) +
+  labs(x = "Mouse ID", y = "Relative abundance") + 
+  facet_nested(~treatment + sex + diet, 
+                nest_line = element_line(linetype = 1), 
+                scales = "free_x", 
+                space = "free", 
+                labeller = labeller(treatment = c("Ctrl" = "Control", "Hp" = "italic('H. pylori')"),
+                                    .default = label_parsed)) + 
+  theme(axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.text.x = element_blank(), 
+        axis.text.y = element_text(size=12), 
+        axis.ticks.length.x = unit(0.3, "cm"),
+        strip.background.x = element_rect(fill="white"), 
+        strip.text.x = element_text(color="black", size=12), 
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        legend.position = "right", 
+        legend.title = element_blank(),
+        legend.key.size = unit(0.4, "cm"),
+        panel.spacing = unit(0.75, "lines"),
+        panel.border = element_rect(color = "white", fill = NA, size = 0.5)
+        )
+plot_physeq_ST_comp_stomach_top10_families
+```
+
+
+
+```{r ST: plot top 10 families in gastric samples, but only significant ones}
+# Create an empty list to store the plots
+plot_list <- list()
+# Create an empty vector to store significant families
+significant_families <- c()
+
+# Iterate over the top 10 families
+for (family in physeq_ST_comp_stomach_top10_families_list[1:10]) {
+  # Subset the data for the current family
+  family_data <- physeq_ST_comp_git_fam_stomach_df %>% filter(Family == family)
+  
+  # Check if there are enough data points for the current family
+  if (nrow(family_data) >= 2) {
+    # Group by sex and diet and perform the Wilcoxon test
+    test_results <- family_data %>%
+      group_by(sex, diet) %>%
+      summarise(p_value = wilcox.test(abund_log10 ~ treatment)$p.value, .groups = 'drop')
+    
+    # Check if any p-value is significant
+    if (any(test_results$p_value < 0.05)) {
+      significant_families <- c(significant_families, family)
+      
+      # Create the plot for the current family
+      plot <- ggplot(family_data, aes(x = treatment, y = abund_log10, color = treatment)) + 
+        geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.5, show.legend = FALSE) +
+        geom_jitter(height = 0, width = 0.2, size = 1) +
+        labs(x = "", y = expression(paste("log"[10],"(Rel. abundance)"))) + 
+        facet_nested(~sex + diet, 
+                     nest_line = element_line(linetype = 1), 
+                     solo_line = TRUE,
+                     scales = "free") +
+        theme_bw() + 
+        scale_y_continuous(limits = c(-5.1, 0.2), breaks = c(-5, -4, -3, -2, -1, 0)) +
+        scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+        scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+        scale_x_discrete(labels = c("Control", expression(italic("H. pylori")))) + 
+        ggtitle(family) + 
+        stat_n_text(size = 2.5, y.pos = -5) + 
+        theme(
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_text(size = 12, margin = margin(b = 0)),
+          axis.title.x = element_blank(),
+          axis.text.y = element_text(size = 12), 
+          strip.text.x = element_text(size = 12), 
+          strip.text.y = element_text(size = 12), 
+          plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+          legend.position = "bottom", 
+          legend.title = element_blank(), 
+          legend.text = element_text(size = 12), 
+          legend.key.size = unit(0.5, 'cm'), 
+          legend.margin = margin(t = -10),  # Adjust this value as needed
+          strip.background = element_blank(), 
+          panel.grid = element_blank()
+        ) + 
+        guides(color = guide_legend(override.aes = list(size = 3))) # increase legend symbol size
+      
+      # Perform Wilcoxon test and adjust y.position
+      wilcox_fecal_ST <- family_data %>%
+        group_by(sex, diet) %>%
+        wilcox_test(abund_log10 ~ treatment) %>%
+        add_significance() %>%
+        add_xy_position() %>%
+        mutate(y.position = 0.1)
+      
+      # Add significance to the plot
+      plot <- plot + stat_pvalue_manual(wilcox_fecal_ST, hide.ns = TRUE, size = 3, tip.length = 0.01)
+      
+      # Add the plot to the list
+      plot_list[[family]] <- plot
+    }
+  } else {
+    # If there are not enough data points, print a message
+    message(paste("Not enough data points for family:", family))
+  }
+}
+
+# Combine all significant plots into one
+if (length(plot_list) > 0) {
+
+  
+  # Define maximum number of columns
+  max_ncol <- 3
+  
+  # Calculate number of rows needed
+  ncol <- min(max_ncol, length(plot_list))  # Use the smaller of max_ncol or the number of plots
+  nrow <- ceiling(length(plot_list) / ncol)  # Calculate rows based on the number of plots
+  
+  plot_physeq_ST_GIT_stomach_top10_sign_families <- ggarrange(plotlist = plot_list, ncol = ncol, nrow = nrow) 
+  print(plot_physeq_ST_GIT_stomach_top10_sign_families)
+} else {
+  message("No significant families to plot.")
+}
+
+#ggsave("24.11.15_MS1_ST_GIT_top10fam_stomach.png", plot = plot_physeq_ST_GIT_stomach_top10_sign_families_title, device = "png", path = ("supplementary"), units="cm",  width=15.75, height=24, dpi=300)
+```
+
+```{r ST: combine gastric composition plot and boxplots}
+plot_physeq_ST_stomach_top10_families_final <- ggarrange(
+  plot_physeq_ST_comp_stomach_top10_families, 
+  plot_physeq_ST_GIT_stomach_top10_sign_families, 
+  labels = c("A", "B"),
+  heights = c(0.5, 1),
+  nrow = 2)
+plot_physeq_ST_stomach_top10_families_final
+
+# Add the title using annotate_figure
+plot_physeq_ST_stomach_top10_families_final_title <- annotate_figure(
+  plot_physeq_ST_stomach_top10_families_final,
+  top = text_grob("GASTRIC COMPOSITIONAL DIFFERENCES", 
+                  size = 12, 
+                  face = "bold"))
+
+plot_physeq_ST_stomach_top10_families_final_title
+
+# Save plot
+#ggsave("25.04.15_MS1_ST_gastric_composition.jpeg", plot = plot_physeq_ST_stomach_top10_families_final_title, device = "jpeg", path = ("supplementary"), units="cm",  width=21, height=30, dpi=300)
+```
+
+```{r ST: calculate Helicobacteraceae percentages in stomach}
+physeq_ST_comp_git_fam_stomach_df %>%
+  filter(Family == "Helicobacteraceae") %>%
+  group_by(sex, diet, treatment) %>%
+  summarize(mean_abundance = mean(Abundance)) %>%
+  mutate(percentage = mean_abundance*100)
+```
+
+```{r ST: compare Hp levels among sexes}
+physeq_ST_comp_git_fam_stomach_Hp_df <- physeq_ST_comp_git_fam_stomach_df %>% filter(Family=="Helicobacteraceae") %>% filter(treatment=="Hp")
+
+# check normal distribution
+physeq_ST_comp_git_fam_stomach_Hp_df %>% shapiro_test(abund_log10) # significant
+
+# check test results from Wilcoxon Rank Sum test 
+physeq_ST_comp_git_fam_stomach_Hp_df %>% group_by(diet) %>% wilcox_test(abund_log10 ~ sex) # p = 0.02
+```
+```{r ST: check cage and litter effects on akkermansia}
+physeq_ST_fecal_akker_df <- physeq_ST_comp_fecal_fam_df %>% filter(Family == "Akkermansiaceae")
+
+library(RColorBrewer)
+my_palette <- brewer.pal(12, "Paired")
+
+plot_physeq_ST_fecal_akker_litter_cage <- ggplot(physeq_ST_fecal_akker_df, aes(x=weeks_on_diet_factor, y=abund_log10, shape = diet, color=as.factor(litter))) + 
+  geom_line(aes(group=mouseID), size=0.5, alpha = 0.5) + 
+  geom_jitter(position = position_jitter(width = 0.2), size = 2) +
+  geom_vline(xintercept = "0", linetype = "solid", color="black") + 
+  labs(x = "Time on diet (weeks)", y = expression(paste("log"[10],"(Relative abundance)"))) + 
+  theme_pubr(border = TRUE) +
+  facet_wrap(cage ~ treatment + sex) + 
+  scale_x_discrete(breaks = c("-2", "0", "1"), expand = c(0,0)) +
+  ggtitle("Akkermansiaceae per litter and cage") + 
+  scale_color_manual(values=my_palette) + 
+  theme_bw() + 
+  theme(axis.text.x = element_text(size=12, color="black"), 
+        axis.title.y = element_text(size = 16), 
+        axis.title.x = element_text(size = 14), 
+        axis.text.y = element_text(size = 14, color="black"), 
+        strip.text.x = element_text(size = 14), 
+        strip.text.y = element_text(size = 14), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 14), 
+        legend.key.height = unit(0.5, 'cm'),  # Adjust the height
+        legend.key.width = unit(1, 'cm'),
+        legend.background = element_rect(color = "black", size = 0.5),
+        plot.title = element_text(hjust = 0.5, size = 16, face = "bold"), 
+        strip.background = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        plot.margin = unit(c(0.1, 0.5, 0.1, 0.1), "cm"),  # top, right, bottom, and left sides 
+        panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))
+plot_physeq_ST_fecal_akker_litter_cage
+```
+
+
+### Ileal samples (ST)
+```{r ST: prepare top 10 families for ileal samples}
+physeq_ST_comp_ileum <- subset_samples(physeq_ST_comp_git, sample_type=="ileum")
+
+
+# Get the most abundant phyla and the most abundant families within those phyla
+physeq_ST_comp_ileum_top10_families <- top_taxa(physeq_ST_comp_ileum,
+                              tax_level = "Family",
+                              n_taxa = 10,
+                              by_proportion = FALSE)
+
+# create a dataframe with the relative abundance of the top 10 families and add a pseudo count to avoid log(0)
+physeq_ST_comp_ileum_top10_families_df <- psmelt(physeq_ST_comp_ileum_top10_families$ps_obj) 
+
+# Get list of the top 10 families
+physeq_ST_comp_ileum_top10_families_list <- unique(physeq_ST_comp_ileum_top10_families_df$Family)[unique(physeq_ST_comp_ileum_top10_families_df$Family) != "Other"]
+
+ physeq_ST_comp_git_fam_ileum_df <- physeq_ST_comp_git_fam_df %>% filter(sample_type == "ileum")
+ 
+ # check if there is contaminations of Helicobacteraceae 
+physeq_ST_comp_git_fam_ileum_df %>%
+  filter(Family == "Helicobacteraceae") %>% 
+  filter(Abundance > 0) %>%
+  group_by(mouseID, treatment) %>%
+  summarize(mean_abundance = mean(Abundance)) %>%
+  mutate(percentage = mean_abundance*100)
+```
+
+```{r ST: plot top10 ileum families}
+plot_physeq_ST_comp_ileum_top10_families <- plot_nested_bar(
+  ps_obj = physeq_ST_comp_ileum_top10_families$ps_obj,
+  top_level = "Phylum",
+  nested_level = "Family",
+  palette = c(Bacillota = "#00F034",
+              Bacteroidota = "#008CF0",
+              Campylobacterota = "#E69F00",
+              Desulfobacterota = "#ECF000",
+              Verrucomicrobiota = "#CA0BE8")) +
+  labs(x = "Mouse ID", y = "Relative abundance", title = "ILEAL COMPOSITION") + 
+  facet_nested(~treatment + sex + diet, 
+                nest_line = element_line(linetype = 1), 
+                scales = "free_x", 
+                space = "free", 
+                labeller = labeller(treatment = c("Ctrl" = "Control", "Hp" = "italic('H. pylori')"),
+                                    .default = label_parsed)) + 
+  theme(axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.text.x = element_blank(), 
+        axis.text.y = element_text(size=12), 
+        axis.ticks.length.x = unit(0.3, "cm"),
+        strip.background.x = element_rect(fill="white"), 
+        strip.text.x = element_text(color="black", size=12), 
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        legend.position = "right", 
+        legend.title = element_blank(),
+        legend.key.size = unit(0.5, "cm"),
+        panel.spacing = unit(0.75, "lines"),
+        panel.border = element_rect(color = "white", fill = NA, size = 0.5)
+        )
+plot_physeq_ST_comp_ileum_top10_families
+
+#ggsave("25.04.15_MS1_ST_ileal_composition.jpeg", plot = plot_physeq_ST_comp_ileum_top10_families, device = "jpeg", path = ("supplementary"), units="cm",  width=21, height=12.5, dpi=300)
+```
+
+```{r ST: plot top 10 families in ileum samples}
+# # Create an empty list to store the plots
+# plot_list <- list()
+# # Create an empty vector to store significant families
+# significant_families <- c()
+# 
+# # Iterate over the top 10 families
+# for (family in physeq_ST_comp_ileum_top10_families_list[1:10]) {
+#   # Subset the data for the current family
+#   family_data <- physeq_ST_comp_git_fam_ileum_df %>% filter(Family == family)
+#   
+#   # Check if there are enough data points for the current family
+#   if (nrow(family_data) >= 2) {
+#     # Group by sex and diet and perform the Wilcoxon test
+#     test_results <- family_data %>%
+#       group_by(sex, diet) %>%
+#       summarise(p_value = wilcox.test(abund_log10 ~ treatment)$p.value, .groups = 'drop')
+#     
+#     # Check if any p-value is significant
+#     if (any(test_results$p_value < 0.05)) {
+#       significant_families <- c(significant_families, family)
+#       
+#       # Create the plot for the current family
+#       plot <- ggplot(family_data, aes(x = treatment, y = abund_log10, color = treatment)) + 
+#         geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.5, show.legend = FALSE) +
+#         geom_jitter(height = 0, width = 0.2, size = 1) +
+#         labs(x = "", y = expression(paste("log"[10],"(Relative abundance)"))) + 
+#         facet_grid(sex~diet) +
+#         theme_bw() + 
+#         scale_y_continuous(limits = c(-5.1, 0.2), breaks = c(-5, -4, -3, -2, -1, 0)) +
+#         scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+#         scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+#         scale_x_discrete(labels = c("Control", expression(italic("H. pylori")))) + 
+#         ggtitle(family) + 
+#         stat_n_text(size = 2.5, y.pos = -5) + 
+#         theme(
+#           axis.text.x = element_blank(),
+#           axis.ticks.x = element_blank(),
+#           axis.title.y = element_text(size = 12, margin = margin(b = 0)),
+#           axis.title.x = element_blank(),
+#           axis.text.y = element_text(size = 12), 
+#           strip.text.x = element_text(size = 12), 
+#           strip.text.y = element_text(size = 12), 
+#           plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+#           legend.position = "none", 
+#           legend.title = element_blank(), 
+#           legend.text = element_text(size = 12), 
+#           legend.key.size = unit(0.5, 'cm'), 
+#           strip.background = element_blank(), 
+#           panel.grid = element_blank()
+#         ) + 
+#         guides(color = guide_legend(override.aes = list(size = 3))) # increase legend symbol size
+#       
+#       # Perform Wilcoxon test and adjust y.position
+#       wilcox_ST <- family_data %>%
+#         group_by(sex, diet) %>%
+#         wilcox_test(abund_log10 ~ treatment) %>%
+#         add_significance() %>%
+#         add_xy_position() %>%
+#         mutate(y.position = 0.1)
+#       
+#       # Add significance to the plot
+#       plot <- plot + stat_pvalue_manual(wilcox_ST, hide.ns = TRUE, size = 3, tip.length = 0.01)
+#       
+#       # Add the plot to the list
+#       plot_list[[family]] <- plot
+#     }
+#   } else {
+#     # If there are not enough data points, print a message
+#     message(paste("Not enough data points for family:", family))
+#   }
+# }
+# 
+# # Combine all significant plots into one
+# if (length(plot_list) > 0) {
+#   
+#   # Define maximum number of columns
+#   max_ncol <- 3
+#   
+#   # Calculate number of rows needed
+#   ncol <- min(max_ncol, length(plot_list))  # Use the smaller of max_ncol or the number of plots
+#   nrow <- ceiling(length(plot_list) / ncol)  # Calculate rows based on the number of plots
+#   
+#   plot_physeq_ST_GIT_ileum_top10_sign_families <- ggarrange(plotlist = plot_list, ncol = ncol, nrow = nrow, common.legend = TRUE, legend = "bottom") 
+#   print(plot_physeq_ST_GIT_ileum_top10_sign_families)
+# } else {
+#   message("No significant families to plot.")
+# }
+# 
+```
+
+### Colonic samples (ST)
+```{r ST: prepare top 10 families for colonic samples}
+physeq_ST_comp_colon <- subset_samples(physeq_ST_comp_git, sample_type=="colon")
+
+
+# Get the most abundant phyla and the most abundant families within those phyla
+physeq_ST_comp_colon_top10_families <- top_taxa(physeq_ST_comp_colon,
+                              tax_level = "Family",
+                              n_taxa = 10,
+                              by_proportion = FALSE)
+
+# create a dataframe with the relative abundance of the top 10 families and add a pseudo count to avoid log(0)
+physeq_ST_comp_colon_top10_families_df <- psmelt(physeq_ST_comp_colon_top10_families$ps_obj) 
+
+# Get list of the top 10 families
+physeq_ST_comp_colon_top10_families_list <- unique(physeq_ST_comp_colon_top10_families_df$Family)[unique(physeq_ST_comp_colon_top10_families_df$Family) != "Other"]
+
+physeq_ST_comp_git_fam_colon_df <- physeq_ST_comp_git_fam_df %>% filter(sample_type == "colon")
+
+ # check if there is contaminations of Helicobacteraceae 
+physeq_ST_comp_git_fam_colon_df %>%
+  filter(Family == "Helicobacteraceae") %>% 
+  filter(Abundance > 0) %>%
+  group_by(mouseID, treatment) %>%
+  summarize(mean_abundance = mean(Abundance)) %>%
+  mutate(percentage = mean_abundance*100)
+```
+
+```{r ST: plot top10 colon families}
+plot_physeq_ST_comp_colon_top10_families <- plot_nested_bar(
+  ps_obj = physeq_ST_comp_colon_top10_families$ps_obj,
+  top_level = "Phylum",
+  nested_level = "Family",
+  palette = c(Bacillota = "#00F034",
+              Bacteroidota = "#008CF0",
+              Campylobacterota = "#E69F00",
+              Desulfobacterota = "#ECF000",
+              Verrucomicrobiota = "#CA0BE8")) +
+  labs(x = "Mouse ID", y = "Relative abundance") + 
+  facet_nested(~treatment + sex + diet, 
+                nest_line = element_line(linetype = 1), 
+                scales = "free_x", 
+                space = "free", 
+                labeller = labeller(treatment = c("Ctrl" = "Control", "Hp" = "italic('H. pylori')"),
+                                    .default = label_parsed)) + 
+  theme(axis.title.x = element_text(size = 12),
+        axis.title.y = element_text(size = 12),
+        axis.text.x = element_blank(), 
+        axis.text.y = element_text(size=12), 
+        axis.ticks.length.x = unit(0.3, "cm"),
+        strip.background.x = element_rect(fill="white"), 
+        strip.text.x = element_text(color="black", size=12), 
+        plot.title = element_text(hjust = 0.5, size = 14, face = "bold"),
+        legend.position = "right", 
+        legend.title = element_blank(),
+        legend.key.size = unit(0.5, "cm"),
+        panel.spacing = unit(0.75, "lines"),
+        panel.border = element_rect(color = "white", fill = NA, size = 0.5)
+        )
+plot_physeq_ST_comp_colon_top10_families
+```
+
+```{r ST: plot top 10 families in colon samples}
+# Create an empty list to store the plots
+plot_list <- list()
+# Create an empty vector to store significant families
+significant_families <- c()
+
+# Iterate over the top 10 families
+for (family in physeq_ST_comp_colon_top10_families_list[1:10]) {
+  # Subset the data for the current family
+  family_data <- physeq_ST_comp_git_fam_colon_df %>% filter(Family == family)
+  
+  # Check if there are enough data points for the current family
+  if (nrow(family_data) >= 2) {
+    # Group by sex and diet and perform the Wilcoxon test
+    test_results <- family_data %>%
+      group_by(sex, diet) %>%
+      summarise(p_value = wilcox.test(abund_log10 ~ treatment)$p.value, .groups = 'drop')
+    
+    # Check if any p-value is significant
+    if (any(test_results$p_value < 0.05)) {
+      significant_families <- c(significant_families, family)
+      
+      # Create the plot for the current family
+      plot <- ggplot(family_data, aes(x = treatment, y = abund_log10, color = treatment)) + 
+        geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.5, show.legend = FALSE) +
+        geom_jitter(height = 0, width = 0.2, size = 1) +
+        labs(x = "", y = expression(paste("log"[10],"(Rel. abundance)"))) + 
+        facet_nested(~sex + diet, 
+                     nest_line = element_line(linetype = 1), 
+                     solo_line = TRUE,
+                     scales = "free") +
+        theme_bw() + 
+        scale_y_continuous(limits = c(-5.1, 0.2), breaks = c(-5, -4, -3, -2, -1, 0)) +
+        scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+        scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+        scale_x_discrete(labels = c("Control", expression(italic("H. pylori")))) + 
+        ggtitle(family) + 
+        stat_n_text(size = 2.5, y.pos = -5) + 
+        theme(
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.title.y = element_text(size = 12, margin = margin(b = 0)),
+          axis.title.x = element_blank(),
+          axis.text.y = element_text(size = 12), 
+          strip.text.x = element_text(size = 12), 
+          strip.text.y = element_text(size = 12), 
+          plot.title = element_text(hjust = 0.5, size = 12, face = "bold"),
+          legend.position = "bottom", 
+          legend.title = element_blank(), 
+          legend.text = element_text(size = 12), 
+          legend.key.size = unit(0.5, 'cm'), 
+          legend.margin = margin(t = -10),  # Adjust this value as needed
+          strip.background = element_blank(), 
+          panel.grid = element_blank()
+        ) + 
+        guides(color = guide_legend(override.aes = list(size = 3))) # increase legend symbol size
+      
+      # Perform Wilcoxon test and adjust y.position
+      wilcox_ST <- family_data %>%
+        group_by(sex, diet) %>%
+        wilcox_test(abund_log10 ~ treatment) %>%
+        add_significance() %>%
+        add_xy_position() %>%
+        mutate(y.position = 0.1)
+      
+      # Add significance to the plot
+      plot <- plot + stat_pvalue_manual(wilcox_ST, hide.ns = TRUE, size = 3, tip.length = 0.01)
+      
+      # Add the plot to the list
+      plot_list[[family]] <- plot
+    }
+  } else {
+    # If there are not enough data points, print a message
+    message(paste("Not enough data points for family:", family))
+  }
+}
+
+# Combine all significant plots into one
+if (length(plot_list) > 0) {
+  
+  # Define maximum number of columns
+  max_ncol <- 2
+  
+  # Calculate number of rows needed
+  ncol <- min(max_ncol, length(plot_list))  # Use the smaller of max_ncol or the number of plots
+  nrow <- ceiling(length(plot_list) / ncol)  # Calculate rows based on the number of plots
+  
+  plot_physeq_ST_GIT_colon_top10_sign_families <- ggarrange(plotlist = plot_list, ncol = ncol, nrow = nrow) 
+  print(plot_physeq_ST_GIT_colon_top10_sign_families)
+} else {
+  message("No significant families to plot.")
+}
+
+#ggsave("24.11.08_MS1_ST_GIT_top10fam_colon.png", plot = plot_physeq_ST_GIT_colon_top10_sign_families_title, device = "png", path = ("supplementary"), units="cm",  width=21, height=10, dpi=300)```
+```
+
+```{r ST: combine colonic composition plot and boxplots}
+plot_physeq_ST_colon_top10_families_final <- ggarrange(
+  plot_physeq_ST_comp_colon_top10_families, 
+  plot_physeq_ST_GIT_colon_top10_sign_families, 
+  labels = c("A", "B"),
+  heights = c(0.8, 1),
+  nrow = 2)
+plot_physeq_ST_colon_top10_families_final
+
+# Add the title using annotate_figure
+plot_physeq_ST_colon_top10_families_final_title <- annotate_figure(
+  plot_physeq_ST_colon_top10_families_final,
+  top = text_grob("COLONIC COMPOSITIONAL DIFFERENCES", 
+                  size = 14, 
+                  face = "bold"))
+
+plot_physeq_ST_colon_top10_families_final_title
+
+# Save plot
+#ggsave("25.04.15_MS1_ST_colonic_composition.jpeg", plot = plot_physeq_ST_colon_top10_families_final_title, device = "jpeg", path = ("supplementary"), units="cm",  width=21, height=25, dpi=300)
+```
+
+# Correlations 
+```{r LT: correlate Hp abundance in stomach with Akkermansiaceae abundance in colon }
+helicobacter_sto <- physeq_LT_comp_git_fam_df %>%
+  filter(mouseID != "EO4.10_ML") %>% # remove control gastric sample that was contaminated 
+  filter(Family == "Helicobacteraceae" & sample_site == "stomach") %>%
+  select(mouseID, treatment, sex, Abundance) %>%
+  dplyr::rename(Abundance_stomach = Abundance)
+
+akkermansia_feces <- physeq_LT_comp_git_fam_df %>%
+  filter(mouseID != "EO4.10_ML") %>%
+  filter(Family == "Akkermansiaceae" & sample_site == "colon") %>%
+  select(mouseID, Abundance) %>%
+  dplyr::rename(Abundance_feces = Abundance)
+
+# Merge data based on Sample IDs
+merged_data <- left_join(helicobacter_sto, akkermansia_feces, by = "mouseID") %>% filter(mouseID!="EO4.5_FR") 
+
+# Calculate correlation and significance
+cor_results_LT <- merged_data %>%
+  group_by(treatment, sex) %>%
+  cor_test(Abundance_stomach, Abundance_feces, method = "pearson")
+cor_results_LT
+
+# Plot data
+plot_correlation_hp_sto_akker_colon <- 
+  merged_data %>% 
+  ggplot(aes(x = Abundance_stomach, y =Abundance_feces, colour = treatment)) +
+  geom_point(aes(color = treatment), size = 3) +
+  facet_wrap(~sex) + 
+  stat_poly_eq(
+               vjust = 0.4,  # Adjust vertical position
+               hjust = -1.5,  # Adjust horizontal position
+               size = 4) +  # Change size if needed
+  geom_smooth(method = "lm", aes(fill = treatment), alpha = 0.2, show.legend = FALSE) +  # Use geom_smooth for SE shading
+  #scale_y_continuous(limits=c(-0.55, 1.05), breaks=c(-0.5, 0.0, 0.5, 1.0)) +
+  #scale_x_continuous(limits=c(-0.05, 1.05), breaks=c(0.00, 0.25, 0.50, 0.75, 1.00)) +
+  labs(x = "Gatric rel. abundance of Helicobacteraceae", y = "Fecal rel. abundance of Akkermansiaceae") +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 12),
+    axis.title.x = element_text(size = 12),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+    panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(override.aes = list(size = 5))) # increase legend symbol size
+
+plot_correlation_hp_sto_akker_colon
+
+# Save plot 
+#ggsave("24.11.19_MS1_plot_correlation_hp_sto_akker_colon.png", plot = plot_correlation_hp_sto_akker_colon, device = "png", path = ("supplementary"), units="cm", width=21, height=12.5, dpi=300)
+```
+
+```{r LT: correlate Hp relative abundance with Hp copy numbers}
+LT_Hp <- physeq_LT_comp_git_fam_stomach_df %>% 
+  filter(mouseID != "EO4.9_FN") %>% # no qPCR data from this mouse
+  filter(treatment =="Hp", Family == "Helicobacteraceae") %>% 
+  mutate(log10_Hp_copies_std = log10(Hp_copies_std))
+
+
+# Calculate correlation and significance
+cor_results_LT <- cor.test(LT_Hp$log10_Hp_copies_std, LT_Hp$abund_log10, method = "pearson")
+cor_results_LT
+
+# Calculate sample size for each facet
+sample_size_LT <- LT_Hp %>%
+  summarise(n = n())
+
+# Plot data
+plot_correlation_Hp_qPCR_16S_LT <- 
+  LT_Hp %>% 
+  ggplot(aes(x = log10_Hp_copies_std, y = abund_log10, colour = treatment)) +
+  geom_point(aes(color = treatment, shape = sex), size = 3) +
+  stat_poly_eq(
+              # vjust = 0.4,  # Adjust vertical position
+              # hjust = -1.5,  # Adjust horizontal position
+               size = 4) +  # Change size if needed
+  geom_smooth(method = "lm", aes(fill = treatment), alpha = 0.2, show.legend = FALSE) +  # Use geom_smooth for SE shading
+  #scale_y_continuous(breaks=c(-5, -4, -3, -2, -1, 0, 1)) +
+  #scale_x_continuous(limits = c(1, 5), breaks=c(1, 2, 3, 4, 5)) +
+  labs(
+    title = "LONG-TERM",
+    y = expression(paste("log"[10],"(Rel. Abundance of Helicobacteraceae)")), 
+    x = expression(paste("log"[10],"(H. pylori glmM copies/ng total DNA)"))) + 
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 11),
+    axis.title.x = element_text(size = 11),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+    panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(override.aes = list(size = 5))) + # increase legend symbol size
+ geom_text(data = sample_size_LT, aes(x = Inf, y = Inf, label = paste("n =", n)), 
+            hjust = 1.1, vjust = 1.5, size = 4, inherit.aes = FALSE)
+
+plot_correlation_Hp_qPCR_16S_LT
+```
+
+```{r ST: correlate Hp relative abundance with Hp copy numbers}
+ST_Hp <- physeq_ST_comp_git_fam_stomach_df %>% 
+  filter(treatment =="Hp", Family == "Helicobacteraceae") %>% 
+  mutate(log10_Hp_copies_std = log10(Hp_copies_std))
+
+# Calculate correlation and significance
+cor_results_ST <- cor.test(ST_Hp$log10_Hp_copies_std, ST_Hp$abund_log10, method = "pearson")
+cor_results_ST
+
+# Calculate sample size for each facet
+sample_size_ST <- ST_Hp %>%
+  summarise(n = n())
+
+# Plot data
+plot_correlation_Hp_qPCR_16S_ST <- 
+  ST_Hp %>% 
+  ggplot(aes(x = log10_Hp_copies_std, y = abund_log10, colour = treatment)) +
+  geom_point(aes(color = treatment, shape = sex), size = 3) +
+  geom_smooth(method = "lm", aes(fill = treatment), alpha = 0.2, show.legend = FALSE) +  # Use geom_smooth for SE shading
+  #scale_y_continuous(limits=c(-4, 1), breaks=c(-4, -3, -2, -1, 0, 1)) +
+  #scale_x_continuous(limits=c(1, 5), breaks=c(1, 2, 3, 4, 5)) +
+  stat_poly_eq(
+              # vjust = 0.4,  # Adjust vertical position
+              # hjust = -1.5,  # Adjust horizontal position
+               size = 4) +  # Change size if needed
+  labs(
+    title = "SHORT-TERM", 
+    y = expression(paste("log"[10],"(Rel. Abundance of Helicobacteraceae)")), 
+    x = expression(paste("log"[10],"(H. pylori glmM copies/ng total DNA)"))) +
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 11),
+    axis.title.x = element_text(size = 11),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+    panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(override.aes = list(size = 5))) + # increase legend symbol size
+ geom_text(data = sample_size_ST, aes(x = Inf, y = Inf, label = paste("n =", n)), 
+            hjust = 1.1, vjust = 1.5, size = 4, inherit.aes = FALSE)
+plot_correlation_Hp_qPCR_16S_ST
+```
+
+
+# Plots for Manuscript
+```{r MS1 Fig S14: prepare combined Bacillota/Bacteroidota plot from both experiments}
+MS1_BB_plot <- ggarrange(
+  plot_physeq_ST_fecal_BB_ratio_final,
+  plot_physeq_LT_fecal_BB_ratio, 
+  nrow=1, 
+  widths = c(0.7, 1),
+  common.legend = TRUE,
+  legend = "bottom"
+  )
+
+MS1_BB_plot
+
+MS1_BB_plot <- annotate_figure(
+  MS1_BB_plot,
+  bottom = text_grob(" ", vjust = 1.5)  # Adjust vjust to add space
+)
+
+#ggsave("25.03.10_MS1_BBratio.jpeg", plot = MS1_BB_plot, device = "jpeg", path = ("supplementary"), units="cm",  width=20, height=12.5, dpi=300)
+```
+
+```{r prepare correlation plots}
+MS1_Hp_correlation_plot <- ggarrange(
+  plot_correlation_Hp_qPCR_16S_LT,
+  plot_correlation_Hp_qPCR_16S_ST, 
+  nrow=1, 
+  labels = c("A", "B"),
+  common.legend = TRUE,
+  legend = "bottom"
+  )
+MS1_Hp_correlation_plot
+
+#ggsave("24.12.19_MS1_Hp_corr_plot.jpeg", plot = MS1_Hp_correlation_plot, device = "jpeg", path = ("supplementary"), units="cm",  width=20, height=12.5, dpi=300)
+```
+

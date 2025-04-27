@@ -1,0 +1,1198 @@
+---
+title: "MS1_alpha_diversity"
+author: "Sigri"
+date: "2024-05-28"
+output: html_document
+---
+
+# Load libraries 
+```{r libraries, message=FALSE, warning=FALSE, paged.print=FALSE, results="hide"}
+### Load required packages
+library(ggplot2)
+library(phyloseq)
+library(speedyseq)
+library(readxl)
+library(vegan)
+library(ggpubr)
+library(tidyverse)
+library(EnvStats)
+library(rstatix)
+library(MicEco)
+library(ggbeeswarm)
+library(redres)
+library(modelsummary)
+library(sjPlot)
+library(ggh4x)
+```
+
+```{r load phyloseq objects}
+physeq_LT <- readRDS("/LT_physeq_scrub_0.98clustered.rds") %>%
+  rename_sample_data(mouseID = animalID)
+
+physeq_LT <- subset_samples(physeq_LT, !(mouseID %in% c("EO4.2_MR", "EO4.2_ML", "EO4.6_ML", "EO4.2_MN", "EO4.7_MN", "EO4.11_FR", "EO4.5_FN"))) # filter out mice that died during the experiment
+
+physeq_ST <- readRDS("ST_physeq_scrub_0.98clustered.rds") %>%
+  rename_sample_data(mouseID = animal_ID)
+
+physeq_ST <- subset_taxa(physeq_ST, Kingdom != "unassigned" & Family != "Mitochondria") # Eukaryota (Kingdom) and Chloroplast (Class) as well, if present 
+```
+
+```{r add Hp loads to phyloseq objects}
+# Load Hp loads data
+MS1_Hp_loads <- read_xlsx("MS1_Hp_loads.xlsx") %>%
+  select(mouseID, experiment, total_bact_load, avg_copies, total_Hp_abund, total_DNA_conc, Hp_copies_std) 
+
+# subset Hp loads data by experiment
+MS1_Hp_loads_LT <- MS1_Hp_loads %>% 
+  filter(experiment == "LT") %>%
+  select(-experiment)
+MS1_Hp_loads_ST <- MS1_Hp_loads %>% 
+  filter(experiment == "ST") %>%
+  select(-experiment)
+
+# Add Hp loads to phyloseq objects
+physeq_LT <- physeq_LT %>% 
+  inner_join_sample_data(MS1_Hp_loads_LT, by = "mouseID") 
+physeq_ST <- physeq_ST %>% 
+  inner_join_sample_data(MS1_Hp_loads_ST, by = "mouseID") 
+
+physeq_LT <- physeq_LT %>% mutate(Hp_load = ifelse(Hp_copies_std > 1000, "high", "low"))
+physeq_ST <- physeq_ST %>% mutate(Hp_load = ifelse(Hp_copies_std > 1000, "high", "low"))
+```
+
+# Alpha Diversity 
+## Long-term
+```{r calc-diversity-metrics}
+alpha_div_LT <- data.frame(estimate_richness(physeq_LT, measures = c("Shannon", "Observed")), sample_data(physeq_LT)) %>%
+  filter(!is.na(treatment)) %>% 
+  mutate(
+    treatment = str_replace(treatment, "Control", "Ctrl"),
+    diet = str_replace(diet, "HF", "HFD"),
+    weeks_on_diet = age_weeks - 5,
+    treatment_diet = paste(treatment, diet, sep = "_"))
+```
+
+### fecal samples
+```{r LMM: alpha diversity fecal samples}
+alpha_div_fecal_LT <- alpha_div_LT %>% 
+  filter(timepoint!="t10") %>%
+  mutate(weeks_on_diet_factor = as.factor(weeks_on_diet))
+
+alpha_div_obs_model_LT <- lmerTest::lmer(Observed ~ treatment*diet*sex + (1|mouseID), data = alpha_div_fecal_LT)
+print(summary(alpha_div_obs_model_LT))
+
+
+alpha_div_shannon_model_LT1 <- lmerTest::lmer(Shannon ~ treatment + diet + sex + (1|mouseID), data = alpha_div_fecal_LT)
+alpha_div_shannon_model_LT <- lmerTest::lmer(Shannon ~ treatment*diet*sex + (1|mouseID), data = alpha_div_fecal_LT)
+
+anova(alpha_div_shannon_model_LT1, alpha_div_shannon_model_LT)
+print(summary(alpha_div_shannon_model_LT))
+```
+
+```{r LMM: plot diagnostic plots}
+# For alpha_div_obs_model_LT
+plot1 <- plot_redres(alpha_div_obs_model_LT, type = "std_cond")
+plot2 <- plot_resqq(alpha_div_obs_model_LT)
+plot3 <- plot_ranef(alpha_div_obs_model_LT)
+
+# Combine the plots
+diagnostic_plots_alpha_div_obs_model_LT <- ggarrange(plot1, plot2, plot3, ncol = 1, nrow = 3)
+diagnostic_plots_alpha_div_obs_model_LT
+
+# For alpha_div_shannon_model_LT
+plot1 <- plot_redres(alpha_div_shannon_model_LT, type = "std_cond")
+plot2 <- plot_resqq(alpha_div_shannon_model_LT)
+plot3 <- plot_ranef(alpha_div_shannon_model_LT)
+
+# Combine the plots
+diagnostic_plots_alpha_div_shannon_model_LT <- ggarrange(plot1, plot2, plot3, ncol = 1, nrow = 3)
+diagnostic_plots_alpha_div_shannon_model_LT
+```
+
+```{r print-table-lmm-alpha-diversity}
+tab_model(alpha_div_shannon_model_LT,
+                                    show.re.var=TRUE, 
+                                    show.icc=TRUE, 
+                                    show.r2=TRUE,
+                                    ci.hyphen = " ; ", 
+                                    string.ci = "CI (95%)",
+                                    string.p = "P-value",
+                                    dv.labels = c("Shannon Diversity Index ~ treatment*diet*sex + (1|mouseID)")
+)
+
+tab_model(alpha_div_obs_model_LT,
+                                    show.re.var=TRUE, 
+                                    show.icc=TRUE, 
+                                    show.r2=TRUE,
+                                    ci.hyphen = " ; ", 
+                                    string.ci = "CI (95%)",
+                                    string.p = "P-value",
+                                    dv.labels = c("Observed Richness ~ treatment*diet*sex + (1|mouseID)")
+)
+```
+
+```{r LT: plot LMM for Observed Richness}
+# prepare dataframe
+alpha_div_obs_model_LT_df <- modelplot(alpha_div_obs_model_LT, draw = FALSE) %>%
+  dplyr::slice(1:(n() - 2)) %>%
+  mutate(p_sign = case_when(
+    p.value > 0.05 ~ "",
+    p.value <= 0.05 & p.value > 0.01 ~ "*",
+    p.value <= 0.01 & p.value > 0.001 ~ "**",
+    p.value <= 0.001 ~ "***"
+  ))
+
+
+# plot
+plot_alpha_div_obs_model_LT <- ggplot(alpha_div_obs_model_LT_df, aes(x = term, y= estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax=conf.high, width = 0.1)) +
+  geom_hline(yintercept= c(0), lty=2, lwd = 0.4, color="black", alpha=0.5) + 
+  labs(y = "Coefficient estimates and 95 % CI",
+       x = "") +
+  coord_flip() +
+  geom_point(aes(size = 2), fill="black", colour="black", pch = 21) +
+  geom_text(aes(label = paste0(sprintf("%.2f", estimate), p_sign)), vjust = -1.25, size = 4) +
+  #scale_y_continuous(limits= c(-2, 3.325), breaks = c(-2, -1, 0, 1, 2, 3)) + 
+  scale_x_discrete(labels = c("(Intercept)" = "Intercept ", 
+                              "treatmentHp" = expression(paste(italic("H. pylori "))), 
+                              "dietHFD" = "HFD ", 
+                              "sexmale" = "male ",
+                              "treatmentHp:dietHFD" = expression(paste(italic("H. pylori"), ":HFD ")), 
+                              "treatmentHp:sexmale" = expression(paste(italic("H. pylori"), ":male ")), 
+                              "dietHFD:sexmale" = "HFD:male ", 
+                              "treatmentHp:dietHFD:sexmale" = expression(paste(italic("H. pylori"), ":HFD:male "))),
+                   position = "top") +
+  #ggtitle("LMM: Shannon Diversity Index") +
+  theme_bw() +
+    theme(axis.text.x = element_text(size=12, color="black"), 
+        axis.title.y = element_text(size = 12), 
+        axis.title.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 10, color="black"), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "none", 
+        legend.title = element_text(size = 12), 
+        legend.text = element_text(size = 12), 
+        legend.key.size = unit(1, 'cm'), 
+        plot.title = element_text(hjust = 0.5, size = 12),
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.spacing = unit(1, "lines"))
+
+plot_alpha_div_obs_model_LT
+```
+
+```{r plot LMM Shannon Diversity Index}
+# prepare dataframe
+alpha_div_shannon_model_LT_df <- modelplot(alpha_div_shannon_model_LT, draw = FALSE) %>%
+  dplyr::slice(1:(n() - 2)) %>%
+  mutate(p_sign = case_when(
+    p.value > 0.05 ~ "",
+    p.value <= 0.05 & p.value > 0.01 ~ "*",
+    p.value <= 0.01 & p.value > 0.001 ~ "**",
+    p.value <= 0.001 ~ "***"
+  ))
+
+
+# plot
+plot_alpha_div_shannon_model_LT <- ggplot(alpha_div_shannon_model_LT_df, aes(x = term, y= estimate)) +
+  geom_errorbar(aes(ymin = conf.low, ymax=conf.high, width = 0.1)) +
+  geom_hline(yintercept= c(0), lty=2, lwd = 0.4, color="black", alpha=0.5) + 
+  labs(y = "Coefficient estimates and 95 % CI",
+       x = "") +
+  coord_flip() +
+  geom_point(aes(size = 2), fill="black", colour="black", pch = 21) +
+  geom_text(aes(label = paste0(sprintf("%.2f", estimate), p_sign)), vjust = -1.25, size = 4) +
+  scale_y_continuous(limits= c(-2, 3.325), breaks = c(-2, -1, 0, 1, 2, 3)) + 
+  scale_x_discrete(labels = c("(Intercept)" = "Intercept ", 
+                              "treatmentHp" = expression(paste(italic("H. pylori "))), 
+                              "dietHFD" = "HFD ", 
+                              "sexmale" = "male ",
+                              "treatmentHp:dietHFD" = expression(paste(italic("H. pylori"), ":HFD ")), 
+                              "treatmentHp:sexmale" = expression(paste(italic("H. pylori"), ":male ")), 
+                              "dietHFD:sexmale" = "HFD:male ", 
+                              "treatmentHp:dietHFD:sexmale" = expression(paste(italic("H. pylori"), ":HFD:male "))),
+                   position = "top") +
+  #ggtitle("LMM: Shannon Diversity Index") +
+  theme_bw() +
+    theme(axis.text.x = element_text(size=12, color="black"), 
+        axis.title.y = element_text(size = 12), 
+        axis.title.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 10, color="black"), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "none", 
+        legend.title = element_text(size = 12), 
+        legend.text = element_text(size = 12), 
+        legend.key.size = unit(1, 'cm'), 
+        plot.title = element_text(hjust = 0.5, size = 12),
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.spacing = unit(1, "lines"))
+
+plot_alpha_div_shannon_model_LT
+```
+
+```{r plot-alpha-obs-fecal-spaghetti}
+# Summarize pre-diet data
+summarized_alpha_div_obs_fecal_LT_pre_diet <- alpha_div_fecal_LT %>%
+  filter(weeks_on_diet <= 0) %>%
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(
+    mean_obs = mean(Observed),
+    SD_obs = sd(Observed),
+    .groups = 'drop'
+  )
+
+# Summarize post-diet data and adjust treatment_diet
+summarized_alpha_div_obs_fecal_LT_post_diet <- alpha_div_fecal_LT %>%
+  filter(weeks_on_diet >= 0) %>%
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(
+    mean_obs = mean(Observed),
+    SD_obs = sd(Observed),
+    .groups = 'drop'
+  ) %>%
+  mutate(treatment_diet = case_when(
+    treatment_diet == "Ctrl_chow" & weeks_on_diet == 0 ~ "Ctrl_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet == 0 ~ "Hp_HFD",
+    TRUE ~ treatment_diet
+  ))
+
+# Convert weeks_on_diet to factor for both data frames
+summarized_alpha_div_obs_fecal_LT_pre_diet <- summarized_alpha_div_obs_fecal_LT_pre_diet %>%
+  mutate(weeks_on_diet_factor = as.factor(weeks_on_diet))
+
+summarized_alpha_div_obs_fecal_LT_post_diet <- summarized_alpha_div_obs_fecal_LT_post_diet %>%
+  mutate(weeks_on_diet_factor = as.factor(weeks_on_diet))
+
+# plot
+plot_alpha_div_obs_fecal_LT <- ggplot() + 
+  geom_line(data=alpha_div_fecal_LT, aes(x=weeks_on_diet_factor,y=Observed,color=treatment_diet, group=mouseID), alpha=0.3, size=0.5) + 
+  geom_line(data = summarized_alpha_div_obs_fecal_LT_pre_diet, aes(x=weeks_on_diet_factor, y=mean_obs, group=treatment_diet, color=treatment_diet, linetype=treatment_diet), size=1) +
+  geom_line(data = summarized_alpha_div_obs_fecal_LT_post_diet, aes(x=weeks_on_diet_factor, y=mean_obs, group=treatment_diet, color=treatment_diet, linetype = treatment_diet), size=1) +
+  geom_vline(xintercept = "0", linetype = "solid", color="black") + 
+  labs(x = "Time on diet (weeks)", y = "Observed Richness") +
+  theme_pubr(border = TRUE) +
+  scale_color_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "#0072B2",
+      "Ctrl_HFD" = "#0072B2",
+      "Hp_chow" = "#E69F00",
+      "Hp_HFD" = "#E69F00")) +
+  scale_linetype_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "dashed",
+      "Ctrl_HFD" = "solid",
+      "Hp_chow" = "dashed",
+      "Hp_HFD" = "solid")) + 
+  facet_grid(~sex) + 
+  scale_x_discrete(breaks = c("-1", "0", "1", "3", "5", "11", "16"), expand = c(0,0)) +
+  scale_y_continuous(limits=c(0,150), breaks = c(0, 50, 100, 150)) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(size=10, color="black"), 
+        axis.title.y = element_text(size = 12), 
+        axis.title.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 10, color="black"), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom",
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 10), 
+        legend.key.height = unit(0.5, 'cm'),  # Adjust the height
+        legend.key.width = unit(1, 'cm'),
+        legend.background = element_rect(color = "black", size = 0.5),
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))
+plot_alpha_div_obs_fecal_LT
+
+# save plot
+#ggsave("24.10.29_alpha_div_obs_fecal_LT.png", plot = plot_alpha_div_obs_fecal_LT, device = "png", path = ("figures"), units="cm", width=20, height=15, dpi=300)
+```
+
+```{r plot-alpha-shannon-fecal-spaghetti}
+# Summarize pre-diet data
+summarized_alpha_div_shannon_fecal_LT_pre_diet <- alpha_div_fecal_LT %>%
+  filter(weeks_on_diet <= 0) %>%
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(
+    mean_shannon = mean(Shannon),
+    SD_shannon = sd(Shannon),
+    .groups = 'drop'
+  )
+
+# Summarize post-diet data and adjust treatment_diet
+summarized_alpha_div_shannon_fecal_LT_post_diet <- alpha_div_fecal_LT %>%
+  filter(weeks_on_diet >= 0) %>%
+  group_by(weeks_on_diet, sex, treatment_diet) %>%
+  summarize(
+    mean_shannon = mean(Shannon),
+    SD_shannon = sd(Shannon),
+    .groups = 'drop'
+  ) %>%
+  mutate(treatment_diet = case_when(
+    treatment_diet == "Ctrl_chow" & weeks_on_diet == 0 ~ "Ctrl_HFD",
+    treatment_diet == "Hp_chow" & weeks_on_diet == 0 ~ "Hp_HFD",
+    TRUE ~ treatment_diet
+  ))
+
+# Convert weeks_on_diet to factor for both dataframes
+summarized_alpha_div_shannon_fecal_LT_pre_diet <- summarized_alpha_div_shannon_fecal_LT_pre_diet %>%
+  mutate(weeks_on_diet_factor = as.factor(weeks_on_diet))
+
+summarized_alpha_div_shannon_fecal_LT_post_diet <- summarized_alpha_div_shannon_fecal_LT_post_diet %>%
+  mutate(weeks_on_diet_factor = as.factor(weeks_on_diet))
+
+# plot
+plot_alpha_div_shannon_fecal_LT <- ggplot() + 
+  geom_line(data=alpha_div_fecal_LT, aes(x=weeks_on_diet_factor,y=Shannon,color=treatment_diet, group=mouseID), alpha=0.3, size=0.5) + 
+  geom_line(data = summarized_alpha_div_shannon_fecal_LT_pre_diet, aes(x=weeks_on_diet_factor, y=mean_shannon, group=treatment_diet, color=treatment_diet, linetype=treatment_diet), size=1) +
+  geom_line(data = summarized_alpha_div_shannon_fecal_LT_post_diet, aes(x=weeks_on_diet_factor, y=mean_shannon, group=treatment_diet, color=treatment_diet, linetype = treatment_diet), size=1) +
+  geom_vline(xintercept = "0", linetype = "solid", color="black") + 
+  labs(x = "Time on diet (weeks)", y = "Shannon Diversity Index") +
+  theme_pubr(border = TRUE) +
+  scale_color_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "#0072B2",
+      "Ctrl_HFD" = "#0072B2",
+      "Hp_chow" = "#E69F00",
+      "Hp_HFD" = "#E69F00")) +
+  scale_linetype_manual(
+    labels = c(
+      expression("Control + chow"),
+      expression("Control + HFD"),
+      expression(italic("H. pylori") * " + chow"),
+      expression(italic("H. pylori") * " + HFD")),
+    values = c(
+      "Ctrl_chow" = "dashed",
+      "Ctrl_HFD" = "solid",
+      "Hp_chow" = "dashed",
+      "Hp_HFD" = "solid")) + 
+  facet_grid(~sex) + 
+  scale_x_discrete(breaks = c("-1", "0", "1", "3", "5", "11", "16"), expand = c(0,0)) +
+  scale_y_continuous(limits=c(0.5, 4.5), breaks = c(1,2,3,4)) +
+  theme_bw() + 
+  theme(axis.text.x = element_text(size=10, color="black"), 
+        axis.title.y = element_text(size = 12), 
+        axis.title.x = element_text(size = 12), 
+        axis.text.y = element_text(size = 10, color="black"), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", ,
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 10), 
+        legend.key.height = unit(0.5, 'cm'),  # Adjust the height
+        legend.key.width = unit(1, 'cm'),
+        legend.background = element_rect(color = "black", size = 0.5),
+        strip.background = element_blank(), 
+        panel.border = element_rect(colour = "black", fill=NA, size=0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(nrow = 2, byrow = TRUE))
+
+plot_alpha_div_shannon_fecal_LT
+
+# save plot
+#ggsave("24.10.29_alpha_div_obs_fecal_LT.png", plot = plot_alpha_div_shannon_fecal_LT, device = "png", path = ("figures"), units="cm", width=20, height=15, dpi=300)
+```
+
+```{r MS1 Figure 5}
+MS1_Fig5 <- cowplot::plot_grid(
+  plot_alpha_div_shannon_fecal_LT, plot_alpha_div_shannon_model_LT,
+  labels= c("A", "B"), 
+  rel_widths = c(1,0.8),
+  align = "h", 
+  axis = "bt"
+  )
+
+MS1_Fig5
+
+### save plot
+#ggsave("25.03.10_MS1_Fig5.jpeg", plot = MS1_Fig5, device = "jpeg", path = ("figures"), units="cm", width=25, height=15, dpi=300)
+```
+
+```{r LT: plot observed richness for supplementary}
+MS1_plot_alpha_div_obs_fecal_LT <- cowplot::plot_grid(plot_alpha_div_obs_fecal_LT, plot_alpha_div_obs_model_LT,
+                                      labels= c("A", "B"),
+                                      rel_widths = c(1,0.8),
+                                      align = "h",
+                                      axis = "bt"
+                                      )
+
+MS1_plot_alpha_div_obs_fecal_LT
+
+### save plot
+#ggsave("25.03.10_MS1_LT_obsrichness.jpeg", plot = MS1_plot_alpha_div_obs_fecal_LT, device = "jpeg", path = ("supplementary"), units="cm", width=25, height=15, dpi=300)
+``` 
+
+### GIT samples 
+```{r filter and prepare data}
+# Filter and prepare the data
+alpha_div_GIT_LT <- alpha_div_LT %>%
+  filter(!is.na(treatment), timepoint == "t10") %>%
+  mutate(sample_site = case_when(
+    sample_site == "stomach" ~ "Stomach",
+    sample_site == "ileum" ~ "Ileum",
+    sample_site == "cecum" ~ "Cecum",
+    sample_site == "colon" ~ "Colon"
+  ))
+```
+
+```{r plot Observed alpha diversity GIT}
+# Plot the data
+plot_alpha_div_obs_GIT_LT <- ggplot(alpha_div_GIT_LT, aes(x = treatment, y = Observed, color = treatment)) + 
+  geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(height = 0, width = 0.2, size = 2) +
+  labs(y = "Observed Richness") +
+  scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_y_continuous(limits = c(0, 125), breaks = seq(0, 125, 25)) + 
+  facet_grid(sex ~ factor(sample_site, levels = c("Stomach", "Ileum", "Cecum", "Colon"))) + 
+  stat_n_text(y.pos = 0, alpha = 0.75) + 
+  theme_bw() + 
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 10), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        strip.background = element_blank(), 
+        ggh4x.facet.nestline = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) 
+
+plot_alpha_div_obs_GIT_LT
+
+# Perform Shapiro-Wilk test
+alpha_div_GIT_LT %>%
+  group_by(sample_site) %>%
+  shapiro_test(Observed) %>%
+  add_significance()
+
+# Perform Wilcoxon test and adjust y.position
+wilcox_alpha_div_obs_GIT_LT <- alpha_div_GIT_LT %>%
+  group_by(sample_site, sex) %>%
+  wilcox_test(Observed ~ treatment) %>%
+  add_significance() %>%
+  add_xy_position() %>%
+  mutate(y.position = 120)
+
+# Add significance to the plot
+plot_alpha_div_obs_GIT_LT_sig <- plot_alpha_div_obs_GIT_LT + stat_pvalue_manual(wilcox_alpha_div_obs_GIT_LT, 
+                                                                        hide.ns = TRUE, 
+                                                                        tip.length = 0.01, 
+                                                                        size = 5, 
+                                                                        y.position = 120)
+
+# Display the plot
+plot_alpha_div_obs_GIT_LT_sig
+```
+
+```{r plot Shannon alpha diversity GIT}
+# Plot the data
+plot_alpha_div_shannon_GIT_LT <- ggplot(alpha_div_GIT_LT, aes(x = treatment, y = Shannon, color = treatment)) + 
+  geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(height = 0, width = 0.2, size = 2) +
+  labs(y = "Shannon Diversity Index") +
+  scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_y_continuous(limits = c(0, 4), breaks = seq(0, 4, 1)) + 
+  facet_grid(sex ~ factor(sample_site, levels = c("Stomach", "Ileum", "Cecum", "Colon"))) + 
+  stat_n_text(y.pos = 0, alpha = 0.75) + 
+  theme_bw() + 
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 10), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        strip.background = element_blank(), 
+        ggh4x.facet.nestline = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) 
+
+plot_alpha_div_shannon_GIT_LT
+
+# Perform Shapiro-Wilk test
+alpha_div_GIT_LT %>%
+  group_by(sample_site) %>%
+  shapiro_test(Shannon) %>%
+  add_significance()
+
+# Perform Wilcoxon test and adjust y.position
+wilcox_alpha_div_shannon_GIT_LT <- alpha_div_GIT_LT %>%
+  group_by(sample_site, sex) %>%
+  wilcox_test(Shannon ~ treatment) %>%
+  add_significance() %>%
+  add_xy_position() %>%
+  mutate(y.position = 3.8)
+
+# Add significance to the plot
+plot_alpha_div_shannon_GIT_LT_sig <- plot_alpha_div_shannon_GIT_LT + stat_pvalue_manual(wilcox_alpha_div_shannon_GIT_LT, 
+                                                                        hide.ns = TRUE, 
+                                                                        tip.length = 0.01, 
+                                                                        size = 5, 
+                                                                        y.position = 3.8)
+
+# Display the plot
+plot_alpha_div_shannon_GIT_LT_sig
+```
+```{r MS1 Fig S7}
+MS1_FigS7 <- ggarrange(plot_alpha_div_obs_GIT_LT_sig, plot_alpha_div_shannon_GIT_LT_sig,
+                       labels= c("A", "B"), 
+                       nrow = 2
+                       )
+
+MS1_FigS7
+
+### save plot
+#ggsave("24.12.19_MS1_FigS7.jpeg", plot = MS1_FigS7, device = "jpeg", path = ("supplementary"), units="cm", width=21, height=30, dpi=300)
+```
+```{r LT: correlate Hp copy numbers with gastric Observed Richness}
+alpha_div_stomach_LT_Hp <- alpha_div_GIT_LT %>% 
+  filter(treatment == "Hp") %>%
+  filter(mouseID != "EO4.9_FN") %>% # no qPCR data from this mouse
+  filter(sample_site == "Stomach") %>%
+  mutate(log10_Hp_copies_std = log10(Hp_copies_std))
+
+# Calculate correlation and significance
+cor_results_LT <- cor.test(alpha_div_stomach_LT_Hp$log10_Hp_copies_std, alpha_div_stomach_LT_Hp$Observed, method = "pearson")
+cor_results_LT
+
+# Calculate sample size for each facet
+sample_size_LT <- alpha_div_stomach_LT_Hp %>%
+  #group_by(sex) %>%
+  summarise(n = n())
+
+# Plot data
+plot_correlation_Hp_qPCR_gastric_Observed_LT <- 
+  alpha_div_stomach_LT_Hp %>% 
+  mutate(sex_diet = paste(sex, diet, sep = "_")) %>%
+  ggplot(aes(x = log10_Hp_copies_std, y = Observed, colour = treatment)) +
+  geom_point(aes(shape = sex_diet), size = 3) +
+  #facet_nested(~sex, nest_line = element_line(linetype = 1)) + 
+  stat_poly_eq(
+              vjust = 0.4,  # Adjust vertical position
+              # hjust = -1.5,  # Adjust horizontal position
+               size = 4) +  # Change size if needed
+  geom_smooth(method = "lm", aes(color = treatment, fill = treatment), alpha = 0.2, show.legend = FALSE) +  # Use geom_smooth for SE shading
+  scale_y_continuous(limits = c(-0.5, 125.5), breaks=c(0,25,50,75,100,125)) +
+  scale_x_continuous(limits = c(0.9, 5.1), breaks=c(1, 2, 3, 4, 5)) +
+  labs(
+    title = "LONG-TERM",
+    y = "Observed Richness", 
+    x = expression(paste("log"[10],"(H. pylori glmM copies/ng total DNA)"))) + 
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_shape_manual(values = c("male_HFD" = 16, "female_HFD" = 17), 
+                     labels =c("male_HFD" = "male + HFD", "female_HFD" = "female + HFD")) + 
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 11),
+    axis.title.x = element_text(size = 11),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    legend.background = element_rect(color = "black", size = 0.5),
+    strip.background = element_blank(),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+    panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(override.aes = list(size = 5))) + # increase legend symbol size
+ geom_text(data = sample_size_LT, aes(x = Inf, y = Inf, label = paste("n =", n)), 
+            hjust = 1.1, vjust = 1.5, size = 4, inherit.aes = FALSE)
+
+# print plot
+plot_correlation_Hp_qPCR_gastric_Observed_LT
+
+plot_correlation_Hp_qPCR_gastric_Observed_LT_stat <- 
+  plot_correlation_Hp_qPCR_gastric_Observed_LT + stat_cor(method="pearson", 
+                                                             label.x.npc = "left", 
+                                                             label.y.npc = "bottom")
+plot_correlation_Hp_qPCR_gastric_Observed_LT_stat
+
+# Calculate correlation and significance
+cor.test(alpha_div_stomach_LT_Hp$log10_Hp_copies_std, alpha_div_stomach_LT_Hp$Observed, method = "pearson")
+
+
+### save plot
+#ggsave("25.02.11_Observed_Hp_qPCR_corr_LT.jpeg", plot = plot_correlation_Hp_qPCR_gastric_Observed_LT, device = "jpeg", path = ("supplementary"), units="cm", width=21, height=15, dpi=300)
+```
+
+```{r LT: correlate Hp copy numbers with colonic Shannon}
+alpha_div_colon_LT_Hp <- alpha_div_GIT_LT %>% 
+  filter(treatment == "Hp") %>%
+  filter(mouseID != "EO4.9_FN") %>% # no qPCR data from this mouse
+  filter(sample_site == "Colon") %>%
+  mutate(log10_Hp_copies_std = log10(Hp_copies_std))
+
+# Calculate correlation and significance
+cor_results_LT <- cor.test(alpha_div_colon_LT_Hp$log10_Hp_copies_std, alpha_div_colon_LT_Hp$Shannon, method = "pearson")
+cor_results_LT
+
+# Calculate sample size for each facet
+sample_size_LT <- alpha_div_colon_LT_Hp %>%
+  summarise(n = n())
+
+# Plot data
+plot_correlation_Hp_qPCR_colon_Shannon_LT <- 
+  alpha_div_colon_LT_Hp %>% 
+  ggplot(aes(x = log10_Hp_copies_std, y = Shannon, colour = treatment)) +
+  geom_point(aes(color = treatment, shape = sex), size = 3) +
+  facet_wrap(~sex) + 
+  stat_poly_eq(
+              # vjust = 0.4,  # Adjust vertical position
+              # hjust = -1.5,  # Adjust horizontal position
+               size = 4) +  # Change size if needed
+  geom_smooth(method = "lm", aes(fill = treatment), alpha = 0.2, show.legend = FALSE) +  # Use geom_smooth for SE shading
+  #scale_y_continuous(breaks=c(-5, -4, -3, -2, -1, 0, 1)) +
+  #scale_x_continuous(limits = c(1, 5), breaks=c(1, 2, 3, 4, 5)) +
+  labs(
+    title = "LONG-TERM",
+    y = "Shannon Diversity Index", 
+    x = expression(paste("log"[10],"(H. pylori glmM copies/ng total DNA)"))) + 
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 11),
+    axis.title.x = element_text(size = 11),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    legend.position = "right",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+    panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(override.aes = list(size = 5))) + # increase legend symbol size
+ geom_text(data = sample_size_LT, aes(x = Inf, y = Inf, label = paste("n =", n)), 
+            hjust = 1.1, vjust = 1.5, size = 4, inherit.aes = FALSE)
+
+plot_correlation_Hp_qPCR_colon_Shannon_LT
+```
+
+## Short-term
+```{r calc-diversity-metrics}
+alpha_div_ST <- data.frame(estimate_richness(physeq_ST, measures = c("Shannon", "Observed")), sample_data(physeq_ST)) %>%
+  filter(!is.na(treatment)) %>%
+  mutate(
+    treatment = str_replace(treatment, "Control", "Ctrl"),
+    diet = str_replace(diet, "HF", "HFD"),
+    diet = str_replace(diet, "CTRL", "CD"),
+    weeks_on_diet = age_weeks - 6,
+    diet_new = if_else(timepoint %in% c("t0", "t1"), "chow", diet),
+    diet_new = factor(diet_new, levels = c("chow", "CD", "HFD")),  
+    treatment_diet = paste(treatment, diet, sep = "_"),
+    treatment_diet_new = paste(treatment, diet_new, sep = "_")
+  )
+```
+
+### fecal samples
+```{r LMM: alpha diversity fecal samples}
+alpha_div_fecal_ST <- alpha_div_ST %>% 
+  filter(timepoint!="t4") %>%
+  mutate(weeks_on_diet_factor = as.factor(weeks_on_diet))
+
+alpha_div_obs_model_ST <- lmerTest::lmer(Observed ~ treatment + diet_new + sex + (1|mouseID), data = alpha_div_fecal_ST)
+print(summary(alpha_div_obs_model_ST)) # singular fit
+
+alpha_div_obs_model_ST <- lmerTest::lmer(Observed ~ treatment*diet_new*sex + (1|mouseID), data = alpha_div_fecal_ST)
+print(summary(alpha_div_obs_model_ST)) # singular fit
+
+alpha_div_shannon_model_ST <- lmerTest::lmer(Shannon ~ treatment + diet_new + sex + (1|mouseID), data = alpha_div_fecal_ST)
+print(summary(alpha_div_shannon_model_ST)) # singular fit
+
+alpha_div_shannon_model_ST <- lmerTest::lmer(Shannon ~ treatment*diet*sex + (1|mouseID), data = alpha_div_fecal_ST)
+print(summary(alpha_div_shannon_model_ST)) # singular fit
+```
+
+```{r Observed richness alpha diversity fecal samples}
+# Create alpha_fecal plot
+plot_alpha_div_obs_fecal_ST<- alpha_div_fecal_ST %>%
+  ggplot(aes(x = treatment, y = Observed, color=treatment)) +
+  geom_boxplot(aes(fill=treatment), alpha=0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(aes(color = treatment), height = 0, width = .2, size=2) +
+  labs(y = "Observed Diversity Index") +
+  scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  facet_nested(sex~diet_new+weeks_on_diet_factor, nest_line = element_line(linetype = 1), solo_line = TRUE,
+             scales = "free", labeller = labeller(weeks_on_diet_factor = c("-2" = "-2w", "0" = "0w", "1" = "1w"))) +
+  scale_y_continuous(limits=c(0, 150), breaks = c(0, 50, 100, 150)) +
+  stat_n_text(y.pos = 0, alpha = 0.75) + 
+  theme_bw() + 
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 10), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        strip.background = element_blank(), 
+        ggh4x.facet.nestline = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) 
+plot_alpha_div_obs_fecal_ST
+
+# Perform statistical tests
+wilcox_alpha_div_obs_fecal_ST <- alpha_div_fecal_ST %>% # nothing significant
+  group_by(sex, diet_new, weeks_on_diet_factor) %>% # also checked effect of sex
+  wilcox_test(Observed ~ treatment) %>%
+  add_significance() %>%
+  add_xy_position()
+
+plot_alpha_div_obs_fecal_ST_sig <- plot_alpha_div_obs_fecal_ST + stat_pvalue_manual(wilcox_alpha_div_obs_fecal_ST, 
+                                                                        hide.ns = TRUE, 
+                                                                        tip.length = 0.01, 
+                                                                        size = 5, 
+                                                                        y.position = 145)
+plot_alpha_div_obs_fecal_ST_sig
+
+```
+
+```{r Shannon alpha diversity fecal samples}
+alpha_div_fecal_ST %>% 
+  filter(weeks_on_diet == -2) %>%
+  group_by(treatment, sex) %>%
+  summarize(mean = mean(Shannon))
+
+# Create alpha_fecal plot
+plot_alpha_div_shannon_fecal_ST<- alpha_div_fecal_ST %>%
+  ggplot(aes(x = treatment, y = Shannon, color=treatment)) +
+  geom_boxplot(aes(fill=treatment), alpha=0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(aes(color = treatment), height = 0, width = .2, size=2) +
+  labs(y = "Shannon Diversity Index") +
+  scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  facet_nested(sex~diet_new+weeks_on_diet_factor, nest_line = element_line(linetype = 1), solo_line = TRUE,
+             scales = "free", labeller = labeller(weeks_on_diet_factor = c("-2" = "-2w", "0" = "0w", "1" = "1w"))) +
+  scale_y_continuous(limits=c(0.7, 4.3), breaks = c(1, 2, 3, 4)) +
+  stat_n_text(y.pos = 0.7, alpha = 0.75) + 
+  theme_bw() + 
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 10), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        strip.background = element_blank(), 
+        ggh4x.facet.nestline = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) 
+plot_alpha_div_shannon_fecal_ST
+
+# Perform statistical tests
+wilcox_alpha_div_shannon_fecal_ST <- alpha_div_fecal_ST %>% # nothing significant
+  group_by(sex, diet_new, weeks_on_diet_factor) %>% # also checked effect of sex
+  wilcox_test(Shannon ~ treatment) %>%
+  add_significance() %>%
+  add_xy_position()
+
+plot_alpha_div_shannon_fecal_ST_sig <- plot_alpha_div_shannon_fecal_ST + stat_pvalue_manual(wilcox_alpha_div_shannon_fecal_ST, 
+                                                                        hide.ns = TRUE, 
+                                                                        tip.length = 0.01, 
+                                                                        size = 5, 
+                                                                        y.position = 4.1)
+plot_alpha_div_shannon_fecal_ST_sig
+```
+
+```{r MS1 Fig S8}
+MS1_FigS8 <- ggarrange(plot_alpha_div_obs_fecal_ST_sig, plot_alpha_div_shannon_fecal_ST_sig,
+                       labels= c("A", "B"), 
+                       nrow = 2
+                       )
+
+MS1_FigS8
+
+# save plot
+#ggsave("24.12.19_FigS8.jpeg", plot = MS1_FigS8, device = "jpeg", path = ("supplementary"), units="cm", width=17.5, height=25, dpi=300)
+```
+
+### GIT samples 
+```{r filter and prepare data}
+# Filter and prepare the data
+alpha_div_GIT_ST <- alpha_div_ST %>%
+  filter(!is.na(treatment), timepoint == "t4") %>%
+  mutate(
+    sample_type = case_when(
+      sample_type == "stomach" ~ "Stomach",
+      sample_type == "ileum" ~ "Ileum",
+      sample_type == "fecal" ~ "Colon"
+    ),
+    sample_type = factor(sample_type, levels = c("Stomach", "Ileum", "Colon"))
+  )
+```
+
+```{r plot-alpha-obs-git}
+# Plot the data
+plot_alpha_div_obs_GIT_ST <- ggplot(alpha_div_GIT_ST, aes(x = treatment, y = Observed, color = treatment)) + 
+  geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(height = 0, width = 0.2, size = 2) +
+  labs(y = "Observed Richness") +
+  scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_y_continuous(limits = c(0, 125), breaks = seq(0, 125, 25)) + 
+  facet_nested(sex~sample_type+diet, nest_line = element_line(linetype = 1)) +
+  #facet_grid(sex ~ factor(sample_type, levels = c("Stomach", "Ileum", "Colon")) + diet) + 
+  stat_n_text(y.pos = 0, alpha = 0.75) + 
+  theme_bw() + 
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 10), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        strip.background = element_blank(), 
+        ggh4x.facet.nestline = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) 
+
+plot_alpha_div_obs_GIT_ST
+
+# Perform Shapiro-Wilk test
+alpha_div_GIT_ST %>%
+  group_by(sample_type) %>%
+  shapiro_test(Observed) %>%
+  add_significance() # ileum significant
+
+# Perform Wilcoxon test and adjust y.position
+wilcox_alpha_div_obs_GIT_ST <- alpha_div_GIT_ST %>%
+  group_by(sample_type, sex, diet) %>%
+  wilcox_test(Observed ~ treatment) %>%
+  add_significance() %>%
+  add_xy_position() %>%
+  mutate(y.position = 120)
+
+# Add significance to the plot
+plot_alpha_div_obs_GIT_ST_sig <- plot_alpha_div_obs_GIT_ST + stat_pvalue_manual(wilcox_alpha_div_obs_GIT_ST, 
+                                                                        hide.ns = TRUE, 
+                                                                        tip.length = 0.01, 
+                                                                        size = 5, 
+                                                                        y.position = 120)
+# Display the plot
+plot_alpha_div_obs_GIT_ST_sig
+```
+
+```{r plot-alpha-shannon-git}
+# Plot the data
+plot_alpha_div_shannon_GIT_ST <- ggplot(alpha_div_GIT_ST, aes(x = treatment, y = Shannon, color = treatment)) + 
+  geom_boxplot(aes(fill = treatment), alpha = 0.1, outlier.shape = NA, lwd = 0.75, show.legend = FALSE) +
+  geom_jitter(height = 0, width = 0.2, size = 2) +
+  labs(y = "Shannon Diversity Index") +
+  scale_colour_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_fill_manual(labels = c("Control", expression(italic("H. pylori"))), values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00")) +
+  scale_y_continuous(limits = c(-0.05, 4.05), breaks = c(0, 1, 2, 3, 4)) + 
+  facet_nested(sex~factor(sample_type, levels = c("Stomach", "Ileum", "Colon"))+diet, nest_line = element_line(linetype = 1)) +
+  stat_n_text(y.pos = 0, alpha = 0.75) + 
+  theme_bw() + 
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.text.y = element_text(size = 10), 
+        strip.text.x = element_text(size = 12), 
+        strip.text.y = element_text(size = 12), 
+        legend.position = "bottom", 
+        legend.title = element_blank(), 
+        legend.text = element_text(size = 12), 
+        legend.margin = margin(c(1, 5, 5, 5)), 
+        legend.spacing = unit(0.5, "cm"),
+        strip.background = element_blank(), 
+        ggh4x.facet.nestline = element_line(colour = "black"),
+        panel.border = element_rect(colour = "black", fill = NA, size = 0.75),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.spacing.x = unit(1, "lines")) + 
+    guides(color = guide_legend(override.aes = list(size = 5))) 
+
+plot_alpha_div_shannon_GIT_ST
+
+# Perform Shapiro-Wilk test
+alpha_div_GIT_ST %>%
+  group_by(sample_type) %>%
+  shapiro_test(Shannon) %>%
+  add_significance() # Colon and Stomach significant
+
+# Perform Wilcoxon test and adjust y.position
+wilcox_alpha_div_shannon_GIT_ST <- alpha_div_GIT_ST %>%
+  group_by(sample_type, sex, diet) %>%
+  wilcox_test(Shannon ~ treatment) %>%
+  add_significance() %>%
+  add_xy_position() %>%
+  mutate(y.position = 4)
+
+# Add significance to the plot
+plot_alpha_div_shannon_GIT_ST_sig <- plot_alpha_div_shannon_GIT_ST + stat_pvalue_manual(wilcox_alpha_div_shannon_GIT_ST, 
+                                                                        hide.ns = TRUE, 
+                                                                        tip.length = 0.01, 
+                                                                        size = 5, 
+                                                                        y.position = 3.8)
+
+# Display the plot
+plot_alpha_div_shannon_GIT_ST_sig
+```
+```{r MS1 Fig S9}
+MS1_FigS9 <- ggpubr::ggarrange(plot_alpha_div_obs_GIT_ST_sig, plot_alpha_div_shannon_GIT_ST_sig, 
+                               nrow = 2, 
+                               labels= c("A", "B"))
+
+
+MS1_FigS9
+
+### save plot
+#ggsave("24.12.19_FigS9.jpeg", plot = MS1_FigS9, device = "jpeg", path = ("supplementary"), units="cm", width=21, height=30, dpi=300)
+```
+```{r ST: correlate Hp copy numbers with gastric Shannon}
+alpha_div_stomach_ST_Hp <- alpha_div_GIT_ST %>% 
+  filter(treatment == "Hp") %>%
+  filter(sample_type == "Stomach") %>%
+  mutate(log10_Hp_copies_std = log10(Hp_copies_std))
+
+# Calculate correlation and significance
+cor_results_ST <- cor.test(alpha_div_stomach_ST_Hp$log10_Hp_copies_std, alpha_div_stomach_ST_Hp$Shannon, method = "pearson")
+cor_results_ST
+
+# Calculate sample size for each facet
+sample_size_ST <- alpha_div_stomach_ST_Hp %>%
+  group_by(sex) %>%
+  summarise(n = n())
+
+# Plot data
+plot_correlation_Hp_qPCR_gastric_Shannon_ST <- 
+  alpha_div_stomach_ST_Hp %>% 
+  ggplot(aes(x = log10_Hp_copies_std, y = Shannon, color = treatment)) +
+  geom_point(aes(color = treatment, shape = diet), size = 3, show.legend = FALSE) +
+  stat_poly_eq(
+              vjust = 0.4,  # Adjust vertical position
+              #hjust = -1.5,  # Adjust horizontal position
+               size = 4) +  # Change size if needed
+    facet_nested(~sex, nest_line = element_line(linetype = 1)) + 
+  geom_smooth(method = "lm", se = FALSE, aes(fill = treatment), alpha = 0.2, show.legend = FALSE) +  # Use geom_smooth for SE shading
+  scale_y_continuous(limits = c(-0.5, 4.5), breaks=c(0,1,2,3,4)) +
+  scale_x_continuous(limits = c(1, 5), breaks=c(1, 2, 3, 4, 5)) +
+  labs(
+    title = "SHORT-TERM",
+    y = "Shannon Diversity Index", 
+    x = expression(paste("log"[10],"(H. pylori glmM copies/ng total DNA)"))) + 
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 11),
+    axis.title.x = element_text(size = 11),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    strip.background = element_blank(),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+    panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(override.aes = list(size = 5))) + # increase legend symbol size
+ geom_text(data = sample_size_ST, aes(x = Inf, y = Inf, label = paste("n =", n)), 
+            hjust = 1.1, vjust = 1.5, size = 4, inherit.aes = FALSE)
+
+plot_correlation_Hp_qPCR_gastric_Shannon_ST
+
+### save plot
+#ggsave("25.02.11_Observed_Hp_qPCR_corr_ST.jpeg", plot = plot_correlation_Hp_qPCR_gastric_Observed_ST, device = "jpeg", path = ("supplementary"), units="cm", width=21, height=15, dpi=300)
+```
+
+```{r ST: correlate Hp copy numbers with gastric Observed Richness}
+alpha_div_stomach_ST_Hp <- alpha_div_GIT_ST %>% 
+  filter(treatment == "Hp") %>%
+  filter(sample_type == "Stomach") %>%
+  mutate(log10_Hp_copies_std = log10(Hp_copies_std))
+
+# Calculate correlation and significance
+cor_results_ST <- cor.test(alpha_div_stomach_ST_Hp$log10_Hp_copies_std, alpha_div_stomach_ST_Hp$Observed, method = "pearson")
+cor_results_ST
+
+# Calculate sample size for each facet
+sample_size_ST <- alpha_div_stomach_ST_Hp %>%
+  #group_by(sex) %>%
+  summarise(n = n())
+
+# Plot data
+plot_correlation_Hp_qPCR_gastric_Observed_ST <- 
+  alpha_div_stomach_ST_Hp %>% 
+  mutate(sex_diet = paste(sex, diet, sep = "_")) %>%
+  ggplot(aes(x = log10_Hp_copies_std, y = Observed, color = treatment)) +
+  geom_point(aes(color = treatment, shape=sex_diet), size = 3) +
+  stat_poly_eq(
+              vjust = 0.4,  # Adjust vertical position
+              #hjust = -1.5,  # Adjust horizontal position
+               size = 4) +  # Change size if needed
+  geom_smooth(method = "lm", se = TRUE, aes(fill = treatment), alpha = 0.2, show.legend = FALSE) +  # Use geom_smooth for SE shading
+  scale_y_continuous(limits = c(-0.5, 125.5), breaks=c(0,25,50,75,100,125)) +
+  scale_x_continuous(limits = c(0.9, 5.1), breaks=c(1, 2, 3, 4, 5)) +
+  labs(
+    title = "SHORT-TERM",
+    y = "Observed Richness", 
+    x = expression(paste("log"[10],"(H. pylori glmM copies/ng total DNA)"))) + 
+  scale_color_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+  scale_fill_manual(values = c("Ctrl" = "#0072B2", "Hp" = "#E69F00"), 
+                     labels = c("Ctrl" = "Control", "Hp" = expression(italic("H. pylori")))) +
+    scale_shape_manual(values = c("male_HFD" = 16, "female_HFD" = 17, "male_CD" = 1, "female_CD" = 2), 
+                     labels =c("male_HFD" = "male + HFD", "female_HFD" = "female + HFD", "male_CD" = "male + CD", "female_CD" = "female + CD")) + 
+  theme_bw() + 
+  theme(
+    axis.text.x = element_text(size = 12, color = "black"),
+    axis.title.y = element_text(size = 11),
+    axis.title.x = element_text(size = 11),
+    axis.text.y = element_text(size = 12, color = "black"),
+    strip.text.x = element_text(size = 12),
+    strip.text.y = element_text(size = 12),
+    legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.key.size = unit(0.5, 'cm'), #change legend key size
+    legend.key.height = unit(0.5, 'cm'), #change legend key height
+    legend.key.width = unit(1, 'cm'), #change legend key width
+    legend.text = element_text(size=12), #change legend text font size
+    legend.background = element_rect(color = "black", size = 0.5),
+    strip.background = element_blank(),
+    plot.title = element_text(hjust = 0.5, size = 14, face = "bold"), 
+    panel.border = element_rect(color = "black", fill = NA, size = 0.75),
+    panel.grid.major = element_blank(), # remove major gridlines
+    panel.grid.minor = element_blank(), # remove minor gridlines
+    panel.spacing = unit(1, "lines"))  +
+  guides(color = guide_legend(override.aes = list(size = 5))) + # increase legend symbol size
+ geom_text(data = sample_size_ST, aes(x = Inf, y = Inf, label = paste("n =", n)), 
+            hjust = 1.1, vjust = 1.5, size = 4, inherit.aes = FALSE)
+
+plot_correlation_Hp_qPCR_gastric_Observed_ST
+
+plot_correlation_Hp_qPCR_gastric_Observed_ST_stat <- 
+  plot_correlation_Hp_qPCR_gastric_Observed_ST + stat_cor(method="pearson", 
+                                                             label.x.npc = "left", 
+                                                             label.y.npc = "bottom")
+plot_correlation_Hp_qPCR_gastric_Observed_ST_stat
+
+# Calculate correlation and significance
+cor.test(alpha_div_stomach_ST_Hp$log10_Hp_copies_std, alpha_div_stomach_ST_Hp$Observed, method = "pearson")
+
+
+### save plot
+#ggsave("25.02.11_Observed_Hp_qPCR_corr_ST.jpeg", plot = plot_correlation_Hp_qPCR_gastric_Observed_ST_stat, device = "jpeg", path = ("supplementary"), units="cm", width=21, height=15, dpi=300)
+```
+
+# Prepare figures for manuscript
+```{r gastric correlation plot for Hp copy numbers and Observed richness}
+MS1_gastric_Hp_alpadiv_correlation_plot <- ggarrange(
+    plot_correlation_Hp_qPCR_gastric_Observed_ST,
+    plot_correlation_Hp_qPCR_gastric_Observed_LT,
+  nrow=1, 
+  labels = c("A", "B"),
+  common.legend = TRUE,
+  legend = "bottom"
+  )
+MS1_gastric_Hp_alpadiv_correlation_plot
+
+MS1_gastric_Hp_alpadiv_correlation_plot <- annotate_figure(
+  MS1_gastric_Hp_alpadiv_correlation_plot,
+  bottom = text_grob(" ", vjust = 1.5)  # Adjust vjust to add space
+)
+
+ggsave("25.02.15_MS1_gastric_Hp_alphadiv_corr_plot.jpeg", plot = MS1_gastric_Hp_alpadiv_correlation_plot, device = "jpeg", path = ("supplementary"), units="cm",  width=21, height=10, dpi=300)
+```
+
